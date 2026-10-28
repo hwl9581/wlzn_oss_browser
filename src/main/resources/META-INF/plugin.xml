@@ -1,0 +1,22 @@
+<idea-plugin>
+    <id>com.wlzn.oss-browser</id>
+    <name>WLZN OSS Browser</name>
+    <vendor>HWL</vendor>
+    <description><![CDATA[
+        <p>Manage Alibaba Cloud OSS and Amazon S3 directly in IntelliJ IDEA.</p>
+        <p>Multi-account connections, secure credentials, bucket and folder browsing,
+        resumable uploads and downloads, transfer queue, preview and editing,
+        copy/move/rename/delete, signed links, ACL, metadata and multipart management.</p>
+        <p>在 IDEA 中管理阿里云 OSS 与 Amazon S3，支持多账号、安全密钥存储、文件夹浏览、
+        断点续传、传输任务、预览编辑、复制移动、临时链接和对象管理。</p>
+    ]]></description>
+    <depends>com.intellij.modules.platform</depends>
+    <extensions defaultExtensionNs="com.intellij">
+        <applicationConfigurable id="com.wlzn.oss.settings"
+                                 parentId="tools" displayName="WLZN OSS Browser"
+                                 instance="com.wlzn.oss.config.OssSettingsConfigurable"/>
+        <toolWindow id="OSS Browser" anchor="right" icon="/icons/oss.svg"
+                    factoryClass="com.wlzn.oss.ui.OssToolWindowFactory"/>
+        <notificationGroup id="WLZN OSS Browser" displayType="BALLOON"/>
+    </extensions>
+</idea-plugin>

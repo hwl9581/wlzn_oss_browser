@@ -1,0 +1,14 @@
+[versions]
+intellijPlatform = "2.10.5"
+kotlin = "2.2.20"
+aliyunOss = "3.18.5"
+aws = "2.57.5"
+
+[libraries]
+aliyun-oss = { module = "com.aliyun.oss:aliyun-sdk-oss", version.ref = "aliyunOss" }
+aws-s3 = { module = "software.amazon.awssdk:s3", version.ref = "aws" }
+aws-url-connection = { module = "software.amazon.awssdk:url-connection-client", version.ref = "aws" }
+
+[plugins]
+intellijPlatform = { id = "org.jetbrains.intellij.platform", version.ref = "intellijPlatform" }
+kotlin = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
