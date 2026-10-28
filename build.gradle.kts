@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.wlzn"
-version = "1.0.2"
+version = "1.0.3"
 
 kotlin {
     jvmToolchain(21)
@@ -48,6 +48,7 @@ intellijPlatform {
         }
         changeNotes = """
             <ul>
+                <li>优化文件、Bucket 和传输任务菜单：使用 IDEA 原生动作菜单、现有图标、操作分组及高级操作子菜单。</li>
                 <li>新增左侧 Bucket / 多级目录树，按需分页加载并与右侧文件列表、面包屑联动。</li>
                 <li>重新整理原生工具栏和深浅主题布局，传输任务支持进度条、状态过滤及行内操作。</li>
                 <li>支持同一账号自动访问多个区域，Region / Endpoint 可留空。</li>

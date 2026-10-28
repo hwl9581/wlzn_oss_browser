@@ -6,6 +6,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionToolbar
 import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.Separator
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.options.ShowSettingsUtil
@@ -210,6 +211,7 @@ class OssBrowserPanel @JvmOverloads internal constructor(private val project: Pr
                 if (!e.isPopupTrigger || busy || profile == null) return
                 val row = table.rowAtPoint(e.point)
                 if (row >= 0 && !table.isRowSelected(row)) table.setRowSelectionInterval(row, row)
+                if (row < 0) table.clearSelection()
                 morePopup().show(table, e.x, e.y)
             }
         })
@@ -233,12 +235,12 @@ class OssBrowserPanel @JvmOverloads internal constructor(private val project: Pr
         val anchor = event.inputEvent?.component as? JComponent ?: this
         menu.show(anchor, 0, anchor.height)
     }
-    private fun bucketPopup() = JPopupMenu().apply {
-        add(JMenuItem("打开指定 Bucket…").apply { addActionListener { openBucket() } })
-        add(JMenuItem("新建 Bucket").apply { addActionListener { createBucket() } })
+    private fun bucketPopup() = BrowserUi.popup("WLZN.OSS.BucketPopup", bucketTree, DefaultActionGroup().apply {
+        add(BrowserUi.action("打开指定 Bucket…", AllIcons.Nodes.Folder, enabled = { !busy && profile != null }) { openBucket() })
+        add(BrowserUi.action("新建 Bucket…", AllIcons.Actions.NewFolder, enabled = { !busy && profile != null }) { createBucket() })
         addSeparator()
-        add(JMenuItem("删除空 Bucket").apply { isEnabled = currentBucket.isNotBlank(); addActionListener { deleteBucket() } })
-    }
+        add(BrowserUi.action("删除空 Bucket…", AllIcons.General.Delete, enabled = { ready() }) { deleteBucket() })
+    })
     private fun selected(): List<ObjectEntry> = table.selectedRows.map { entries.getOrNull(table.convertRowIndexToModel(it)) }.filterNotNull()
     private fun setStatus(text: String) { status.text = text; status.toolTipText = text }
     private fun updateSelection() {
@@ -403,21 +405,33 @@ class OssBrowserPanel @JvmOverloads internal constructor(private val project: Pr
         }
     }
 
-    private fun morePopup() = JPopupMenu().apply {
-        listOf("刷新" to { refreshCurrent() }, "复制路径" to { copyPaths() }, "临时分享链接" to { share() },
-            "复制到…" to { copyOrMove(false) }, "移动到…" to { copyOrMove(true) }, "重命名" to { rename() },
-            "元数据" to { metadata() }, "读写权限 ACL" to { acl() }, "解冻归档对象" to { restore() },
-            "未完成分片" to { multipart() }, "删除所选" to { deleteObjects() }).forEach { (label, action) ->
-            add(JMenuItem(label).apply {
-                isEnabled = ready() && when (label) {
-                    "刷新", "未完成分片" -> true
-                    "复制路径", "复制到…", "移动到…", "删除所选" -> selected().isNotEmpty()
-                    "重命名" -> selected().size == 1
-                    else -> selected().singleOrNull()?.directory == false
-                }
-                addActionListener { if (ready()) action() }
-            })
-        }
+    private fun morePopup() = BrowserUi.popup("WLZN.OSS.FilePopup", table, fileActions())
+
+    private fun fileActions() = DefaultActionGroup().apply {
+        val singleFile = { ready() && selected().singleOrNull()?.directory == false }
+        val hasSelection = { ready() && selected().isNotEmpty() }
+        add(BrowserUi.action("预览 / 编辑…", AllIcons.Actions.Preview, enabled = singleFile) { preview() })
+        add(BrowserUi.action("下载…", AllIcons.Actions.Download, enabled = hasSelection) { download() })
+        addSeparator()
+        add(BrowserUi.action("复制路径", AllIcons.Actions.Copy, enabled = hasSelection) { copyPaths() })
+        add(BrowserUi.action("临时分享链接…", AllIcons.Actions.Share, enabled = singleFile) { share() })
+        addSeparator()
+        add(BrowserUi.action("重命名…", AllIcons.Actions.Edit, enabled = { ready() && selected().size == 1 }) { rename() })
+        add(BrowserUi.action("复制到…", AllIcons.Actions.Copy, enabled = hasSelection) { copyOrMove(false) })
+        add(BrowserUi.action("移动到…", AllIcons.Actions.MoveTo2, enabled = hasSelection) { copyOrMove(true) })
+        add(DefaultActionGroup("高级操作", true).apply {
+            templatePresentation.icon = AllIcons.General.Settings
+            add(BrowserUi.action("元数据…", AllIcons.Actions.Properties, enabled = singleFile) { metadata() })
+            add(BrowserUi.action("读写权限 ACL…", AllIcons.General.Settings, enabled = singleFile) { acl() })
+            addSeparator()
+            add(BrowserUi.action("解冻归档对象…", AllIcons.Actions.Download, enabled = singleFile) { restore() })
+            add(BrowserUi.action("未完成分片…", AllIcons.Actions.ListFiles, enabled = { ready() }) { multipart() })
+        })
+        addSeparator()
+        add(BrowserUi.action("新建目录…", AllIcons.Actions.NewFolder, enabled = { ready() }) { createFolder() })
+        add(BrowserUi.action("刷新", AllIcons.Actions.Refresh, enabled = { ready() }) { refreshCurrent() })
+        addSeparator()
+        add(BrowserUi.action("删除所选…", AllIcons.General.Delete, enabled = hasSelection) { deleteObjects() })
     }
 
     private fun copyPaths() {

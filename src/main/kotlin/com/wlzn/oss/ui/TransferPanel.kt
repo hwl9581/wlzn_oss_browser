@@ -132,17 +132,21 @@ class TransferPanel @JvmOverloads internal constructor(
                 if (!e.isPopupTrigger) return
                 val row = table.rowAtPoint(e.point)
                 if (row >= 0 && !table.isRowSelected(row)) table.setRowSelectionInterval(row, row)
-                val selection = selectedRecords()
-                JPopupMenu().apply {
-                    add(JMenuItem("任务详情").apply { isEnabled = selection.size == 1; addActionListener { showDetails() } })
-                    add(JMenuItem("暂停所选").apply { isEnabled = selection.any { it.status in setOf(TransferStatus.RUNNING, TransferStatus.QUEUED) }; addActionListener {
-                        selection.filter { it.status in setOf(TransferStatus.RUNNING, TransferStatus.QUEUED) }.forEach { runAction(it, "pause") }
-                    } })
-                    add(JMenuItem("继续 / 重试所选").apply { isEnabled = selection.any { it.status in setOf(TransferStatus.PAUSED, TransferStatus.FAILED) }; addActionListener {
-                        selection.filter { it.status in setOf(TransferStatus.PAUSED, TransferStatus.FAILED) }.forEach { runAction(it, "resume") }
-                    } })
-                    add(JMenuItem("取消并清理所选").apply { isEnabled = selection.any { !finished(it.status) }; addActionListener { cancel(selection.filter { !finished(it.status) }) } })
-                }.show(table, e.x, e.y)
+                if (row < 0) table.clearSelection()
+                BrowserUi.popup("WLZN.OSS.TransferPopup", table, DefaultActionGroup().apply {
+                    add(BrowserUi.action("任务详情…", AllIcons.Actions.PreviewDetails, enabled = { selectedRecords().size == 1 }) { showDetails() })
+                    addSeparator()
+                    add(BrowserUi.action("暂停所选", AllIcons.Actions.Pause, enabled = {
+                        selectedRecords().any { it.status in setOf(TransferStatus.RUNNING, TransferStatus.QUEUED) }
+                    }) { selectedRecords().filter { it.status in setOf(TransferStatus.RUNNING, TransferStatus.QUEUED) }.forEach { runAction(it, "pause") } })
+                    add(BrowserUi.action("继续 / 重试所选", AllIcons.Actions.Resume, enabled = {
+                        selectedRecords().any { it.status in setOf(TransferStatus.PAUSED, TransferStatus.FAILED) }
+                    }) { selectedRecords().filter { it.status in setOf(TransferStatus.PAUSED, TransferStatus.FAILED) }.forEach { runAction(it, "resume") } })
+                    addSeparator()
+                    add(BrowserUi.action("取消并清理所选…", AllIcons.General.Delete, enabled = { selectedRecords().any { !finished(it.status) } }) {
+                        cancel(selectedRecords().filter { !finished(it.status) })
+                    })
+                }).show(table, e.x, e.y)
             }
         })
         refresh(); timer.start()

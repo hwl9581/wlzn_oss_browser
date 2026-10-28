@@ -193,14 +193,59 @@ class BrowserUiTest : BasePlatformTestCase() {
             com.intellij.openapi.util.IconLoader.activate()
             SwingUtilities.updateComponentTreeUI(browser); SwingUtilities.updateComponentTreeUI(transfers)
             render(browser, "browser-dark", 1100, 560); render(transfers, "transfers-dark", 1100, 520)
+            renderFileMenu(browser, "file-menu-dark")
             render(browser, "browser-narrow", 560, 560); render(transfers, "transfers-narrow", 560, 520)
             assertTrue(components(browser).filterIsInstance<JSplitPane>().single().leftComponent.width >= 100)
             UIManager.setLookAndFeel(oldLaf); JBColor.setDark(wasDark)
             SwingUtilities.updateComponentTreeUI(browser); render(browser, "browser-light", 1100, 560)
+            renderFileMenu(browser, "file-menu-light")
         } finally {
             UIManager.setLookAndFeel(oldLaf); JBColor.setDark(wasDark)
             Disposer.dispose(browser); Disposer.dispose(transfers)
         }
+    }
+
+    fun testFileMenuSelectionRulesAndCopyPathsUseCurrentRows() {
+        val keys = AtomicReference(listOf("share/appconf/test/message/images/a.jpg", "share/appconf/test/message/default.jpg"))
+        val browser = OssBrowserPanel(project) { fixture(keys) }
+        try {
+            invoke(browser, "连接")
+            val table = components(browser).filterIsInstance<JTable>().single()
+            waitFor("菜单测试目录加载") { table.rowCount == 2 }
+            val group = fileMenuActions(browser)
+            val actions = group.getChildren(null).flatMap { if (it is ActionGroup) it.getChildren(null).toList() else listOf(it) }
+            fun action(text: String) = actions.single { it.templatePresentation.text == text }
+            fun event(action: AnAction) = AnActionEvent.createEvent(DataContext.EMPTY_CONTEXT, action.templatePresentation.clone(), "WLZN.OSS.FilePopup", ActionUiKind.POPUP, null)
+            fun enabled(text: String): Boolean = action(text).let { item -> event(item).also { item.update(it) }.presentation.isEnabled }
+            val file = (0 until table.rowCount).first { table.getValueAt(it, 0) == "default.jpg" }
+            val folder = 1 - file
+            table.setRowSelectionInterval(file, file)
+            assertTrue(enabled("预览 / 编辑…")); assertTrue(enabled("临时分享链接…")); assertTrue(enabled("重命名…"))
+            table.setRowSelectionInterval(folder, folder)
+            assertFalse(enabled("预览 / 编辑…")); assertFalse(enabled("元数据…")); assertTrue(enabled("下载…")); assertTrue(enabled("重命名…"))
+            table.setRowSelectionInterval(0, 1)
+            assertFalse(enabled("重命名…")); assertFalse(enabled("读写权限 ACL…")); assertTrue(enabled("复制路径"))
+            action("复制路径").let { it.actionPerformed(event(it)) }
+            val clipboard: String? = com.intellij.openapi.ide.CopyPasteManager.getInstance().getContents(java.awt.datatransfer.DataFlavor.stringFlavor)
+            assertEquals(setOf("oss://test-bucket/share/appconf/test/message/images/", "oss://test-bucket/share/appconf/test/message/default.jpg"), clipboard?.lineSequence()?.toSet())
+            table.clearSelection()
+            assertFalse(enabled("删除所选…")); assertFalse(enabled("复制路径")); assertTrue(enabled("刷新")); assertTrue(enabled("新建目录…"))
+        } finally { Disposer.dispose(browser) }
+    }
+
+    private fun fileMenuActions(browser: OssBrowserPanel) = OssBrowserPanel::class.java.getDeclaredMethod("fileActions")
+        .apply { isAccessible = true }.invoke(browser) as ActionGroup
+
+    private fun renderFileMenu(browser: OssBrowserPanel, name: String) {
+        val menu = BrowserUi.popup("WLZN.OSS.FilePopup", browser, fileMenuActions(browser))
+        // 无头测试中只填充原生菜单并离屏绘制，不创建实际弹出窗口。
+        menu.javaClass.getDeclaredField("myContext").apply { isAccessible = true }.set(menu, DataContext.EMPTY_CONTEXT)
+        menu.javaClass.getDeclaredMethod("updateChildren", com.intellij.ui.awt.RelativePoint::class.java)
+            .apply { isAccessible = true }.invoke(menu, null)
+        waitFor("原生菜单填充") { menu.componentCount > 0 }
+        menu.popupMenuListeners.forEach { it.popupMenuWillBecomeVisible(javax.swing.event.PopupMenuEvent(menu)) }
+        val size = menu.preferredSize
+        render(menu, name, size.width, size.height)
     }
 
     private fun fixture(keys: AtomicReference<List<String>>): StorageClient = object : StorageClient by FakeStorage() {

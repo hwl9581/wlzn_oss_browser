@@ -10,6 +10,8 @@ import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.*
 import javax.swing.*
+import javax.swing.event.PopupMenuEvent
+import javax.swing.event.PopupMenuListener
 import javax.swing.table.DefaultTableCellRenderer
 
 internal object BrowserUi {
@@ -37,6 +39,22 @@ internal object BrowserUi {
             component.border = JBUI.Borders.empty()
             component.isOpaque = false
             component.name = place
+        }
+
+    fun popup(place: String, target: JComponent, group: ActionGroup): JPopupMenu =
+        ActionManager.getInstance().createActionPopupMenu(place, group).apply {
+            setTargetComponent(target)
+        }.component.apply {
+            addPopupMenuListener(object : PopupMenuListener {
+                override fun popupMenuWillBecomeVisible(e: PopupMenuEvent) {
+                    components.filterIsInstance<JMenuItem>().forEach { item ->
+                        val size = item.preferredSize
+                        item.preferredSize = Dimension(maxOf(JBUI.scale(220), size.width), maxOf(JBUI.scale(30), size.height))
+                    }
+                }
+                override fun popupMenuWillBecomeInvisible(e: PopupMenuEvent) {}
+                override fun popupMenuCanceled(e: PopupMenuEvent) {}
+            })
         }
 
     fun label(text: String = "") = JLabel(text).apply {

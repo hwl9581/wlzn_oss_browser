@@ -3,13 +3,15 @@
 在 IntelliJ IDEA 内管理 **阿里云 OSS / Amazon S3** 的独立插件，项目名 `wlzn_oss_browser`。
 采用 IDEA 原生 Swing 界面与两家云厂商的官方 SDK，不需要额外启动桌面客户端。
 
-**1.0.2 使用侧栏导航布局**：左侧显示 Bucket 和可展开的多级目录，右侧为面包屑、搜索、文件操作与文件列表；传输任务提供进度条、状态过滤和行内操作。保留原有固定图标、连接配置和传输断点。
+**1.0.3 优化原生菜单**：文件、Bucket 和传输任务菜单沿用 IDEA 的主题、间距和图标；文件操作分组展示，元数据、ACL、解冻和分片管理收进“高级操作”，删除单独分隔。单选、多选、目录和空白区域的可用操作随当前选择更新。
+
+1.0.2 使用侧栏导航布局：左侧显示 Bucket 和可展开的多级目录，右侧为面包屑、搜索、文件操作与文件列表；传输任务提供进度条、状态过滤和行内操作。保留原有固定图标、连接配置和传输断点。
 
 1.0.1 支持同账号多区域自动路由，修复配置校验后 OK 无法恢复，以及新上传空分片列表缺省下一页游标导致的空指针；沿用 WLZN 系列插件已有固定图标。传输意外异常的安全诊断可在 IDEA 日志中按 `WLZN OSS transfer` 检索，不记录异常原文中的密钥、Token 或签名链接。
 
 ## 安装与配置
 
-1. 在 IDEA 的 **Settings → Plugins → 齿轮 → Install Plugin from Disk** 中选择 `build/distributions/wlzn_oss_browser-1.0.2.zip`，重启 IDEA。
+1. 在 IDEA 的 **Settings → Plugins → 齿轮 → Install Plugin from Disk** 中选择 `build/distributions/wlzn_oss_browser-1.0.3.zip`，重启 IDEA。
 2. 打开 **Settings → Tools → WLZN OSS Browser**，新增连接。
 3. 选择阿里云 OSS 或 Amazon S3，填写连接名称、AccessKey ID、Secret；临时凭据同时填写 STS / Session Token。**Region 和 Endpoint 均可留空**。
 4. **Endpoint 留空时自动按 Bucket 路由**，同一套密钥可以访问多个区域，无需重复配置。OSS 使用 Bucket 列表的区域信息或位置查询，S3 使用 HeadBucket 的区域响应头；浏览、上传下载、续传、分片管理、临时链接都使用 Bucket 的实际区域。
