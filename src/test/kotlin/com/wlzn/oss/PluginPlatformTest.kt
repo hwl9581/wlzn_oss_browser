@@ -16,6 +16,40 @@ import javax.imageio.ImageIO
 import javax.swing.*
 
 class PluginPlatformTest : BasePlatformTestCase() {
+    fun testAwsXmlResponseUsesJdkXmlClassesWithPluginFirstLibraryLoading() {
+        val descriptor = com.intellij.ide.plugins.PluginManagerCore.getPlugin(com.intellij.openapi.extensions.PluginId.getId("com.wlzn.oss-browser"))
+        assertNotNull(descriptor)
+        val jars = java.nio.file.Files.list(descriptor!!.pluginPath.resolve("lib")).use { files ->
+            files.filter { it.toString().endsWith(".jar") }.map { it.toUri().toURL() }.toList()
+        }
+        // 平台测试会把依赖并入测试类路径，必须单独模拟插件优先加载，否则重复 XML API 被父加载器掩盖。
+        XmlPluginLoader(jars.toTypedArray()).use { loader ->
+            assertEquals("java.xml", loader.loadClass("javax.xml.stream.XMLInputFactory").module.name)
+            assertEquals("java.xml", loader.loadClass("javax.xml.namespace.QName").module.name)
+            val thread = Thread.currentThread()
+            val previous = thread.contextClassLoader
+            try {
+                thread.contextClassLoader = loader
+                val parser = loader.loadClass("software.amazon.awssdk.protocols.query.unmarshall.XmlDomParser")
+                val response = java.io.ByteArrayInputStream("<ListAllMyBucketsResult><Buckets><Bucket><Name>unit-bucket</Name></Bucket></Buckets></ListAllMyBucketsResult>".toByteArray())
+                response.use {
+                    assertNotNull(parser.getMethod("parse", java.io.InputStream::class.java).invoke(null, it))
+                }
+            } finally { thread.contextClassLoader = previous }
+        }
+    }
+
+    private class XmlPluginLoader(urls: Array<java.net.URL>) : java.net.URLClassLoader(urls, ClassLoader.getPlatformClassLoader()) {
+        override fun loadClass(name: String, resolve: Boolean): Class<*> {
+            if (!name.startsWith("javax.xml.")) return super.loadClass(name, resolve)
+            synchronized(getClassLoadingLock(name)) {
+                val loaded = findLoadedClass(name) ?: try { findClass(name) } catch (_: ClassNotFoundException) { super.loadClass(name, false) }
+                if (resolve) resolveClass(loaded)
+                return loaded
+            }
+        }
+    }
+
     fun testProfileDialogRecoversAfterInvalidOkAndNeverAcceptsMissingCredentials() {
         val dialog = OssSettingsConfigurable.ProfileDialog(null)
         try {

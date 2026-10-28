@@ -165,7 +165,7 @@ class OssSettingsConfigurable : Configurable {
         override fun createCenterPanel(): JComponent = panel {
             row("连接名称：") { cell(name).columns(COLUMNS_LARGE) }
             row("云服务：") { cell(provider) }
-            row("Endpoint（可选）：") { cell(endpoint).columns(COLUMNS_LARGE).comment("留空按 Bucket 自动选择官方端点，支持多个区域；自定义/内网端点在此手动指定") }
+            row("Endpoint（可选）：") { cell(endpoint).columns(COLUMNS_LARGE).comment("推荐留空按 Bucket 自动选择；S3 东京示例：https://s3.ap-northeast-1.amazonaws.com，不能只填区域域名") }
             row("Region（可选）：") { cell(region).comment("留空自动识别 Bucket 区域。自定义端点可填写签名区域，例如 cn-hangzhou / us-east-1") }
             row("指定 Bucket：") { cell(bucket).comment("可选；填写后直接访问，无需列举账号下所有 Bucket 的权限") }
             row("起始目录：") { cell(prefix).comment("可选，例如 uploads/；用于初始定位，不替代服务端权限") }

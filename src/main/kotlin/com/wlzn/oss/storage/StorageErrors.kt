@@ -1,8 +1,14 @@
 package com.wlzn.oss.storage
 
 import com.aliyun.oss.OSSException
+import com.intellij.openapi.diagnostic.Logger
 import com.wlzn.oss.model.StorageOperationException
+import software.amazon.awssdk.core.exception.SdkClientException
 import software.amazon.awssdk.services.s3.model.S3Exception
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import javax.net.ssl.SSLException
 
 object StorageErrors {
     /** SDK 原始异常可能包含签名 URL、AK 或请求头，不直接显示或打印。 */
@@ -14,7 +20,18 @@ object StorageErrors {
         when (error) {
             is OSSException -> { code = error.errorCode.orEmpty(); request = error.requestId.orEmpty() }
             is S3Exception -> { code = error.awsErrorDetails()?.errorCode().orEmpty(); request = error.requestId().orEmpty() }
-            else -> return "操作失败，请检查网络、Endpoint、Region 和凭据（${error.javaClass.simpleName}）"
+            else -> {
+                val causes = generateSequence(error) { it.cause }.take(8).toList()
+                val hint = when {
+                    causes.any { it is UnknownHostException } -> "Endpoint 域名无法解析，请检查地址是否正确（AWS S3 地址需要包含 s3），或清空 Endpoint 自动选择"
+                    causes.any { it is SSLException || it is java.security.cert.CertificateException } -> "TLS/证书握手失败，请检查 IDEA 的代理、证书信任及网络连接"
+                    causes.any { it is SocketTimeoutException || it is java.net.http.HttpTimeoutException } -> "网络请求超时，请检查 IDEA 代理和 Endpoint 的可达性"
+                    causes.any { it is ConnectException } -> "无法建立网络连接，请检查 Endpoint、IDEA 代理和代理服务是否运行"
+                    error is SdkClientException -> "S3 SDK 客户端请求失败，详见 IDEA 日志中的 WLZN OSS browser 诊断记录"
+                    else -> "操作失败，请检查网络、Endpoint、Region 和凭据"
+                }
+                return "$hint（${causes.last().javaClass.simpleName}）"
+            }
         }
         val hint = when (code) {
             "AccessDenied", "AllAccessDisabled" -> "访问被拒绝，请检查账号权限和 Bucket 策略"
@@ -33,6 +50,13 @@ object StorageErrors {
 
     /** 仅记录异常类型与代码位置，不记录 SDK 异常消息、请求头或签名链接。 */
     fun diagnostic(error: Throwable): String = generateSequence(error) { it.cause }.take(5).joinToString("\nCaused by: ") { cause ->
-        cause.javaClass.name + cause.stackTrace.take(30).joinToString("\n", prefix = "\n") { "  at $it" }
+        cause.javaClass.name + cause.stackTrace.take(30).joinToString("\n", prefix = "\n") { "  at $it" } +
+            cause.suppressed.take(3).joinToString("") { suppressed ->
+                "\nSuppressed: ${suppressed.javaClass.name}" + suppressed.stackTrace.take(10).joinToString("\n", prefix = "\n") { "  at $it" }
+            }
+    }
+
+    fun logBrowserFailure(error: Throwable) {
+        Logger.getInstance(StorageErrors::class.java).warn("WLZN OSS browser request failed\n${diagnostic(error)}")
     }
 }

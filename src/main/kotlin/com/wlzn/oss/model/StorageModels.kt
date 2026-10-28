@@ -31,6 +31,11 @@ data class ConnectionProfile(
                 uri.rawQuery == null && uri.fragment == null && uri.path.orEmpty() in setOf("", "/")) {
                 "Endpoint 只填写 http(s)://主机[:端口]，不要包含 Bucket、路径或凭据"
             }
+            if (provider == Provider.AMAZON_S3) {
+                require(!Regex("[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+\\.amazonaws\\.com(?:\\.cn)?").matches(uri.host.lowercase())) {
+                    "填写的是 AWS 区域域名，缺少 S3 服务前缀；请清空 Endpoint 自动选择，或填写 https://s3.<region>.amazonaws.com（中国区以 .com.cn 结尾）"
+                }
+            }
         }
     }
 

@@ -233,6 +233,33 @@ class BrowserUiTest : BasePlatformTestCase() {
         } finally { Disposer.dispose(browser) }
     }
 
+    fun testFailedConnectionShowsNetworkCauseWithoutPartialWriteWarningAndCanRetry() {
+        val shown = AtomicReference<String>()
+        val previousDialog = com.intellij.openapi.ui.TestDialogManager.setTestDialog { message ->
+            shown.set(message)
+            com.intellij.openapi.ui.Messages.OK
+        }
+        val browser = OssBrowserPanel(project) {
+            object : StorageClient by FakeStorage() {
+                override fun buckets(): List<BucketEntry> = throw software.amazon.awssdk.core.exception.SdkClientException.builder()
+                    .message("secret-credential-and-url").cause(java.net.UnknownHostException("secret-host")).build()
+            }
+        }
+        try {
+            invoke(browser, "连接")
+            waitFor("显示连接失败原因") { shown.get() != null }
+            assertTrue(shown.get().contains("域名无法解析"))
+            assertFalse(shown.get().contains("部分完成")); assertFalse(shown.get().contains("secret"))
+            val action = components(browser).mapNotNull { ActionToolbar.findToolbarBy(it) }.distinct()
+                .flatMap { it.actionGroup.getChildren(null).toList() }.first { it.templatePresentation.text == "连接" }
+            val event = AnActionEvent.createEvent(DataContext.EMPTY_CONTEXT, action.templatePresentation.clone(), "WLZN.Test", ActionUiKind.TOOLBAR, null)
+            waitFor("失败后连接按钮恢复") { action.update(event); event.presentation.isEnabled }
+        } finally {
+            Disposer.dispose(browser)
+            com.intellij.openapi.ui.TestDialogManager.setTestDialog(previousDialog)
+        }
+    }
+
     private fun fileMenuActions(browser: OssBrowserPanel) = OssBrowserPanel::class.java.getDeclaredMethod("fileActions")
         .apply { isAccessible = true }.invoke(browser) as ActionGroup
 

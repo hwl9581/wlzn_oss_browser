@@ -14,11 +14,45 @@ class StorageOperationsTest {
 
     @Test fun `unexpected transfer diagnostics retain code locations without exception secrets`() {
         val error = NullPointerException("secret-value-and-signed-url").apply { initCause(IllegalStateException("session-token-value")) }
+        error.addSuppressed(java.net.ConnectException("proxy-password-and-authorization"))
         val diagnostic = StorageErrors.diagnostic(error)
         assertTrue(diagnostic.contains("NullPointerException")); assertTrue(diagnostic.contains("StorageOperationsTest"))
         assertFalse(diagnostic.contains("secret-value")); assertFalse(diagnostic.contains("session-token-value"))
+        assertTrue(diagnostic.contains("Suppressed: java.net.ConnectException"))
+        assertFalse(diagnostic.contains("proxy-password-and-authorization"))
         assertTrue(StorageErrors.describe(error).contains("插件内部异常"))
         assertFalse(StorageErrors.describe(error).contains("secret-value"))
+    }
+
+    @Test fun `SDK client failure reports safe network cause instead of generic credentials advice`() {
+        val failures = listOf(
+            java.net.UnknownHostException("secret-endpoint-and-token") to "域名无法解析",
+            javax.net.ssl.SSLHandshakeException("secret-certificate-and-token") to "TLS/证书",
+            java.net.SocketTimeoutException("secret-request-and-token") to "超时",
+            java.net.ConnectException("secret-proxy-password") to "无法建立网络连接"
+        )
+        for ((cause, hint) in failures) {
+            val error = software.amazon.awssdk.core.exception.SdkClientException.builder()
+                .message("secret-access-key-and-url").cause(cause).build()
+            val description = StorageErrors.describe(error)
+            assertTrue(description.contains(hint))
+            assertTrue(description.contains(cause.javaClass.simpleName))
+            assertFalse(description.contains("secret"))
+            assertFalse(StorageErrors.diagnostic(error).contains("secret"))
+        }
+    }
+
+    @Test fun `AWS region domain without service is rejected while S3 and compatible endpoints remain allowed`() {
+        for (host in listOf("ap-northeast-1.amazonaws.com", "cn-north-1.amazonaws.com.cn")) {
+            val failure = assertThrows(IllegalArgumentException::class.java) {
+                ConnectionProfile(name = "S3", provider = Provider.AMAZON_S3, endpoint = "https://$host").validate()
+            }
+            assertTrue(failure.message.orEmpty().contains("缺少 S3"))
+        }
+        for (host in listOf("s3.ap-northeast-1.amazonaws.com", "s3.cn-north-1.amazonaws.com.cn",
+            "s3.dualstack.ap-northeast-1.amazonaws.com", "s3-fips.us-gov-east-1.amazonaws.com", "minio.example.com")) {
+            ConnectionProfile(name = "S3", provider = Provider.AMAZON_S3, endpoint = "https://$host").validate()
+        }
     }
 
     @Test fun `download rejects traversal absolute paths drive names and ambiguous segments`() {

@@ -332,7 +332,7 @@ class OssBrowserPanel @JvmOverloads internal constructor(private val project: Pr
         if (!region.matches(Regex("[a-z0-9]+(?:-[a-z0-9]+)+"))) { Messages.showWarningDialog(project, "请输入有效区域，例如 cn-hangzhou / us-east-1", "创建区域"); return }
         val name = Messages.showInputDialog(project, "新 Bucket 名称（区域：$region；使用服务端默认安全策略）", "新建 Bucket", null)?.trim() ?: return
         if (name.isBlank()) return
-        background("创建 Bucket", { openClient(connection).use { if (automatic) it.createBucket(name, region) else it.createBucket(name) } }) {
+        background("创建 Bucket", { openClient(connection).use { if (automatic) it.createBucket(name, region) else it.createBucket(name) } }, mayHaveMutated = true) {
             bucketTree.addBucket(BucketEntry(name, region))
             navigateTo(name, "")
         }
@@ -343,7 +343,7 @@ class OssBrowserPanel @JvmOverloads internal constructor(private val project: Pr
         val bucket = currentBucket.takeIf { it.isNotBlank() } ?: return
         val typed = Messages.showInputDialog(project, "删除 $bucket？仅允许删除空 Bucket，不会自动清空对象。\n输入完整 Bucket 名称确认：", "删除 Bucket", Messages.getWarningIcon()) ?: return
         if (typed != bucket) return
-        background("删除 Bucket", { openClient(connection).use { it.deleteBucket(bucket) } }) {
+        background("删除 Bucket", { openClient(connection).use { it.deleteBucket(bucket) } }, mayHaveMutated = true) {
             bucketTree.removeBucket(bucket)
             currentBucket = ""; currentPrefix = ""; listingToken = null; entries = emptyList()
             model.fireTableDataChanged(); pathBar.showPath(""); updateSelection(); setStatus("Bucket 已删除")
@@ -623,7 +623,7 @@ class OssBrowserPanel @JvmOverloads internal constructor(private val project: Pr
         val connection = profile?.copy() ?: return
         val bucket = currentBucket
         val prefix = currentPrefix
-        background(title, { openClient(connection).use { action(it, connection, bucket, prefix) } }) {
+        background(title, { openClient(connection).use { action(it, connection, bucket, prefix) } }, mayHaveMutated = true) {
             bucketTree.refreshLocation(bucket, prefix)
             load(prefix)
         }
@@ -635,7 +635,7 @@ class OssBrowserPanel @JvmOverloads internal constructor(private val project: Pr
         load(currentPrefix)
     }
 
-    private fun <T> background(title: String, action: () -> T, success: (T) -> Unit) {
+    private fun <T> background(title: String, action: () -> T, mayHaveMutated: Boolean = false, success: (T) -> Unit) {
         val request = ++generation
         val connectionSnapshot = (profile ?: profileBox.selectedItem as? ConnectionProfile)?.copy()
         setBusy(true)
@@ -655,13 +655,14 @@ class OssBrowserPanel @JvmOverloads internal constructor(private val project: Pr
                 success(result as T)
             }
             override fun onThrowable(error: Throwable) {
+                StorageErrors.logBrowserFailure(error)
                 if (!alive(request)) return
                 val message = StorageErrors.describe(error)
                 if (currentBucket.isNotBlank()) bucketTree.selectLocation(currentBucket, currentPrefix)
                 setStatus("$title：$message")
-                Messages.showErrorDialog(project, "$message\n\n批量操作可能已部分完成，请刷新核对。", title)
+                Messages.showErrorDialog(project, message + if (mayHaveMutated) "\n\n操作可能已部分完成，请刷新核对。" else "", title)
             }
-            override fun onCancel() { if (alive(request)) setStatus("已取消 $title；批量操作请刷新核对已完成项") }
+            override fun onCancel() { if (alive(request)) setStatus("已取消 $title" + if (mayHaveMutated) "；请刷新核对已完成项" else "") }
             override fun onFinished() { if (alive(request)) setBusy(false) }
         })
     }

@@ -172,7 +172,10 @@ internal class BucketTreePanel(private val project: Project, private val openCli
                     model.nodeChanged(node)
                 } finally { selecting = false }
             }
-            override fun onThrowable(error: Throwable) { if (alive()) showRetry(StorageErrors.describe(error)) }
+            override fun onThrowable(error: Throwable) {
+                StorageErrors.logBrowserFailure(error)
+                if (alive()) showRetry(StorageErrors.describe(error))
+            }
             override fun onCancel() { if (alive()) showRetry("已取消加载，可点击重试") }
             private fun showRetry(message: String) {
                 selecting = true

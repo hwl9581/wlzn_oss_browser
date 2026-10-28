@@ -3,7 +3,11 @@
 在 IntelliJ IDEA 内管理 **阿里云 OSS / Amazon S3** 的独立插件，项目名 `wlzn_oss_browser`。
 采用 IDEA 原生 Swing 界面与两家云厂商的官方 SDK，不需要额外启动桌面客户端。
 
-**1.0.3 优化原生菜单**：文件、Bucket 和传输任务菜单沿用 IDEA 的主题、间距和图标；文件操作分组展示，元数据、ACL、解冻和分片管理收进“高级操作”，删除单独分隔。单选、多选、目录和空白区域的可用操作随当前选择更新。
+**1.0.5 修复 IDEA 内 S3 连接失败**：移除阿里云 SDK 传递依赖引入的旧 `stax-api`、`xpp3` XML API，避免覆盖 JDK `java.xml`，修复 AWS 解析响应时的 `ClassCastException`。更新后完整重启 IDEA，让旧类加载器退出。
+
+1.0.4 补充连接诊断：浏览连接和目录加载失败记录安全异常链，区分 DNS、TLS、连接失败及超时；只读连接失败不再提示“批量操作可能已部分完成”。拦截缺少 `s3` 前缀的 AWS 区域域名。
+
+1.0.3 优化原生菜单：文件、Bucket 和传输任务菜单沿用 IDEA 的主题、间距和图标；文件操作分组展示，元数据、ACL、解冻和分片管理收进“高级操作”，删除单独分隔。单选、多选、目录和空白区域的可用操作随当前选择更新。
 
 1.0.2 使用侧栏导航布局：左侧显示 Bucket 和可展开的多级目录，右侧为面包屑、搜索、文件操作与文件列表；传输任务提供进度条、状态过滤和行内操作。保留原有固定图标、连接配置和传输断点。
 
@@ -11,7 +15,7 @@
 
 ## 安装与配置
 
-1. 在 IDEA 的 **Settings → Plugins → 齿轮 → Install Plugin from Disk** 中选择 `build/distributions/wlzn_oss_browser-1.0.3.zip`，重启 IDEA。
+1. 在 IDEA 的 **Settings → Plugins → 齿轮 → Install Plugin from Disk** 中选择 `build/distributions/wlzn_oss_browser-1.0.5.zip`，完整重启 IDEA。
 2. 打开 **Settings → Tools → WLZN OSS Browser**，新增连接。
 3. 选择阿里云 OSS 或 Amazon S3，填写连接名称、AccessKey ID、Secret；临时凭据同时填写 STS / Session Token。**Region 和 Endpoint 均可留空**。
 4. **Endpoint 留空时自动按 Bucket 路由**，同一套密钥可以访问多个区域，无需重复配置。OSS 使用 Bucket 列表的区域信息或位置查询，S3 使用 HeadBucket 的区域响应头；浏览、上传下载、续传、分片管理、临时链接都使用 Bucket 的实际区域。
@@ -32,6 +36,8 @@ Region 在自动连接中仅作为初始访问区域，留空默认 OSS `cn-hang
 内网、专线或兼容服务需要固定端点时再填写 Endpoint；**显式 Endpoint 保持手动模式，不会切换到其他公网端点**。Region 可从标准 OSS/S3 区域域名推断，自定义域名请填写服务要求的签名 Region。原有显式端点配置继续按手动模式工作；希望同一账号自动访问多个区域时，清空 Endpoint 后重新连接即可。
 
 “路径风格访问”适用于明确支持此模式的兼容端点及本地测试；正常云端连接保持关闭。新建 Bucket 时需要单独指定其所属区域，不影响账号访问已有的其他区域。点击“连接”会刷新区域缓存。
+
+AWS S3 东京区域可填写 Region `ap-northeast-1` 并将 Endpoint 留空；手动模式的服务端点为 `https://s3.ap-northeast-1.amazonaws.com`，`https://ap-northeast-1.amazonaws.com` 只有区域名，不能用于 S3。连接失败后可在 IDEA 日志检索 `WLZN OSS browser` 查看异常类名和栈帧；传输失败仍检索 `WLZN OSS transfer`。日志不记录原始异常消息、凭据、签名链接或配置正文。
 
 ## 已实现功能
 

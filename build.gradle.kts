@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.wlzn"
-version = "1.0.3"
+version = "1.0.5"
 
 kotlin {
     jvmToolchain(21)
@@ -26,7 +26,11 @@ configurations {
 }
 
 dependencies {
-    implementation(libs.aliyun.oss)
+    implementation(libs.aliyun.oss) {
+        // dom4j 的可选旧 XML API 会在 IDEA 插件优先加载时遮蔽 JDK java.xml，导致 S3 响应解析 ClassCastException。
+        exclude(group = "javax.xml.stream", module = "stax-api")
+        exclude(group = "xpp3", module = "xpp3")
+    }
     implementation(libs.aws.s3) {
         exclude(group = "software.amazon.awssdk", module = "apache-client")
         exclude(group = "software.amazon.awssdk", module = "netty-nio-client")
@@ -48,6 +52,8 @@ intellijPlatform {
         }
         changeNotes = """
             <ul>
+                <li>修复 OSS 传递依赖打入重复 JDK XML API，导致 IDEA 内 AWS S3 响应解析类型转换失败、连接不可用的问题。</li>
+                <li>补充浏览连接和目录加载的安全诊断，细分 DNS、TLS、代理连接和超时错误；拦截缺少 S3 前缀的 AWS 区域域名。</li>
                 <li>优化文件、Bucket 和传输任务菜单：使用 IDEA 原生动作菜单、现有图标、操作分组及高级操作子菜单。</li>
                 <li>新增左侧 Bucket / 多级目录树，按需分页加载并与右侧文件列表、面包屑联动。</li>
                 <li>重新整理原生工具栏和深浅主题布局，传输任务支持进度条、状态过滤及行内操作。</li>
