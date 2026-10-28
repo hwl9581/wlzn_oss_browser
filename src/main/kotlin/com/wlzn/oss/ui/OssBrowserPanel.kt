@@ -4,6 +4,9 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonParser
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.actionSystem.ActionToolbar
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.Separator
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.progress.ProcessCanceledException
@@ -14,7 +17,11 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.Messages
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.SearchTextField
+import com.intellij.ui.SimpleTextAttributes
+import com.intellij.ui.JBColor
 import com.intellij.ui.table.JBTable
+import com.intellij.util.ui.JBUI
 import com.wlzn.oss.config.ConnectionAccess
 import com.wlzn.oss.config.OssSettings
 import com.wlzn.oss.model.*
@@ -22,11 +29,13 @@ import com.wlzn.oss.storage.*
 import com.wlzn.oss.transfer.TransferManager
 import java.awt.BorderLayout
 import java.awt.Dimension
-import java.awt.FlowLayout
+import java.awt.GridBagLayout
 import java.awt.datatransfer.DataFlavor
 import java.awt.datatransfer.StringSelection
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.event.ComponentAdapter
+import java.awt.event.ComponentEvent
 import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
 import java.nio.ByteBuffer
@@ -40,15 +49,22 @@ import javax.swing.*
 import javax.swing.table.AbstractTableModel
 import javax.swing.table.DefaultTableCellRenderer
 
-class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4)), Disposable {
+class OssBrowserPanel @JvmOverloads internal constructor(private val project: Project,
+    private val openClient: (ConnectionProfile) -> StorageClient = ConnectionAccess::open) : JPanel(BorderLayout()), Disposable {
     private val settings = OssSettings.getInstance()
     private val profileBox = JComboBox<ConnectionProfile>()
-    private val bucketBox = JComboBox<String>().apply { isEditable = true; preferredSize = Dimension(230, 28) }
-    private val path = JTextField(24)
-    private val search = JTextField(16)
-    private val status = JLabel(" 请先配置并连接账号")
-    private val controls = mutableListOf<JButton>()
-    private val operationControls = mutableListOf<JButton>()
+    private val bucketTree = BucketTreePanel(project, openClient) { bucket, prefix -> navigateTo(bucket, prefix) }
+    private val pathBar = BreadcrumbBar { navigateTo(currentBucket, StorageOperations.folder(it)) }
+    private val searchField = object : SearchTextField(false) {
+        override fun onFieldCleared() { if (ready()) load(currentPrefix) }
+    }
+    private val search = searchField.textEditor.apply { emptyText.text = "按名称前缀搜索"; name = "oss.search" }
+    private val status = BrowserUi.label("请先配置并连接账号")
+    private val summary = BrowserUi.label()
+    private val connectionInfo = BrowserUi.label("未连接")
+    private val toolbars = mutableListOf<ActionToolbar>()
+    private val uploadButton = JButton("上传", AllIcons.Actions.Upload)
+    private val nextButton = JButton("加载更多")
     private var profile: ConnectionProfile? = null
     private var currentBucket = ""
     private var currentPrefix = ""
@@ -63,67 +79,127 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         override fun getRowCount() = entries.size
         override fun getColumnCount() = columns.size
         override fun getColumnName(column: Int) = columns[column]
+        override fun getColumnClass(column: Int): Class<*> = if (column in 1..2) java.lang.Long::class.java else String::class.java
         override fun getValueAt(rowIndex: Int, columnIndex: Int): Any {
             val entry = entries[rowIndex]
             return when (columnIndex) {
                 0 -> entry.displayName(currentPrefix)
-                1 -> if (entry.directory) "目录" else formatSize(entry.size)
-                2 -> entry.modified?.let { DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss").withZone(ZoneId.systemDefault()).format(it) }.orEmpty()
+                1 -> if (entry.directory) -1L else entry.size
+                2 -> entry.modified?.toEpochMilli() ?: 0L
                 else -> entry.storageClass
             }
         }
     }
-    private val table = JBTable(model).apply {
+    private val table = object : JBTable(model) {
+        override fun getToolTipText(event: MouseEvent): String? = rowAtPoint(event.point).takeIf { it >= 0 }
+            ?.let { entries.getOrNull(convertRowIndexToModel(it))?.key?.let { key -> "对象：$key" } }
+    }.apply {
+        name = "oss.files"
         autoCreateRowSorter = true
         setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION)
-        rowHeight = 25
-        emptyText.text = "连接账号后浏览对象；也可在设置中指定 Bucket 直接访问"
+        BrowserUi.styleTable(this, 34)
     }
 
     init {
-        val header = JPanel().apply { layout = BoxLayout(this, BoxLayout.Y_AXIS) }
-        header.add(JPanel(FlowLayout(FlowLayout.LEFT, 5, 3)).apply {
-            add(JLabel("连接：")); profileBox.preferredSize = Dimension(280, 28); add(profileBox)
-            add(button("连接") { connect() })
-            add(button("设置") {
-                ShowSettingsUtil.getInstance().showSettingsDialog(project, "WLZN OSS Browser")
-                reloadProfiles()
-            })
-        })
-        header.add(JPanel(FlowLayout(FlowLayout.LEFT, 5, 3)).apply {
-            add(JLabel("Bucket：")); add(bucketBox)
-            add(button("打开") { openBucket() })
-            add(operationButton("新建 Bucket") { createBucket() })
-            add(operationButton("删除 Bucket") { deleteBucket() })
-        })
-        header.add(JPanel(FlowLayout(FlowLayout.LEFT, 5, 3)).apply {
-            add(operationButton("上级") { load(StorageOperations.folder(currentPrefix.removeSuffix("/").substringBeforeLast('/', ""))) })
-            add(JLabel("目录：")); add(path)
-            add(operationButton("前往") { load(StorageOperations.folder(path.text)) })
-            add(operationButton("刷新") { load(currentPrefix) })
-        })
-        header.add(JPanel(FlowLayout(FlowLayout.LEFT, 5, 3)).apply {
-            add(JLabel("名称前缀：")); add(search)
-            add(operationButton("搜索") { load(currentPrefix) })
-            add(operationButton("下一页") { if (listingToken != null) load(currentPrefix, true) else setStatus("已到最后一页") })
-        })
-        header.add(JPanel(FlowLayout(FlowLayout.LEFT, 5, 3)).apply {
-            add(operationButton("上传文件 / 目录") { chooseUpload() })
-            add(operationButton("下载") { download() })
-            add(operationButton("新建目录") { createFolder() })
-            add(operationButton("预览 / 编辑") { preview() })
-            add(operationButton("更多 ▾") { morePopup().show(itSource(), 0, 26) })
-        })
-        add(header, BorderLayout.NORTH)
-        add(JBScrollPane(table), BorderLayout.CENTER)
-        add(status, BorderLayout.SOUTH)
+        val header = JPanel().apply { name = "oss.header"; layout = BoxLayout(this, BoxLayout.Y_AXIS) }
+        val accountRow = JPanel(GridBagLayout()).apply { border = JBUI.Borders.empty(6, 10); background = BrowserUi.chrome }
+        profileBox.apply { name = "oss.account"; minimumSize = JBUI.size(65, 28); preferredSize = JBUI.size(220, 28); font = com.intellij.util.ui.UIUtil.getLabelFont().deriveFont(java.awt.Font.PLAIN) }
+        BrowserUi.addCell(accountRow, BrowserUi.label("账号"), 0)
+        BrowserUi.addCell(accountRow, profileBox, 1)
+        BrowserUi.addCell(accountRow, toolbar("Connection", BrowserUi.action("连接", AllIcons.Actions.Execute, false,
+            { !busy && profileBox.selectedItem != null }) { connect() }).component, 2)
+        BrowserUi.addCell(accountRow, JPanel().apply { isOpaque = false; minimumSize = Dimension(0, 0) }, 3, 1.0)
+        BrowserUi.addCell(accountRow, connectionInfo, 4)
+        BrowserUi.addCell(accountRow, toolbar("Settings", BrowserUi.action("连接设置", AllIcons.General.Settings, false, { !busy }) {
+            ShowSettingsUtil.getInstance().showSettingsDialog(project, "WLZN OSS Browser"); reloadProfiles()
+        }).component, 5)
+        accountRow.border = BorderFactory.createCompoundBorder(JBUI.Borders.customLine(JBColor.border(), 0, 0, 1, 0), accountRow.border)
+        val location = JPanel(GridBagLayout()).apply { border = JBUI.Borders.empty(4, 10, 0, 10); background = com.intellij.util.ui.UIUtil.getTableBackground() }
+        BrowserUi.addCell(location, toolbar("Parent", BrowserUi.action("上级目录", AllIcons.Actions.MoveUp, false,
+            { ready() && currentPrefix.isNotEmpty() }) { navigateTo(currentBucket, StorageOperations.folder(currentPrefix.removeSuffix("/").substringBeforeLast('/', ""))) }).component, 0)
+        BrowserUi.addCell(location, pathBar, 1, 0.7)
+        BrowserUi.addCell(location, toolbar("Navigation",
+            BrowserUi.action("编辑完整目录路径", AllIcons.Actions.Edit, false, { ready() }) { pathBar.editPath() },
+            BrowserUi.action("刷新", AllIcons.Actions.Refresh, false, { ready() }) { refreshCurrent() }).component, 2)
+        searchField.minimumSize = JBUI.size(110, 28); searchField.preferredSize = JBUI.size(205, 28)
+        BrowserUi.addCell(location, searchField, 3, 0.3)
+        header.add(location)
+        uploadButton.apply {
+            name = "oss.upload"; toolTipText = "上传文件或目录，也可以拖入文件列表"; margin = JBUI.insets(3, 10)
+            putClientProperty(com.intellij.ide.ui.laf.darcula.ui.DarculaButtonUI.DEFAULT_STYLE_KEY, true)
+            addActionListener { chooseUpload() }
+        }
+        nextButton.apply { name = "oss.more-page"; isVisible = false; margin = JBUI.insets(3, 8); addActionListener { if (ready() && listingToken != null) load(currentPrefix, true) } }
+        val fileActions = JPanel(BorderLayout(6, 0)).apply { border = JBUI.Borders.empty(3, 10, 6, 10); background = com.intellij.util.ui.UIUtil.getTableBackground() }
+        val actions = toolbar("Files",
+            BrowserUi.action("下载", AllIcons.Actions.Download, enabled = { ready() && selected().isNotEmpty() }) { download() },
+            Separator.getInstance(),
+            BrowserUi.action("新建目录", AllIcons.Actions.NewFolder, enabled = { ready() }) { createFolder() },
+            BrowserUi.action("预览", AllIcons.Actions.Preview, enabled = { ready() && selected().singleOrNull()?.directory == false }) { preview() },
+            BrowserUi.action("更多", AllIcons.Actions.MoreHorizontal, enabled = { ready() }) { showPopup(morePopup(), it) })
+        fileActions.add(uploadButton, BorderLayout.WEST); fileActions.add(actions.component, BorderLayout.CENTER); fileActions.add(nextButton, BorderLayout.EAST)
+        header.add(fileActions)
+        val scroll = JBScrollPane(table).apply { border = JBUI.Borders.customLine(JBColor.border(), 1, 0, 0, 0); setColumnHeaderView(table.tableHeader) }
+        val files = JPanel(BorderLayout()).apply { minimumSize = JBUI.size(220, 0); add(header, BorderLayout.NORTH); add(scroll, BorderLayout.CENTER) }
+        val sidebar = JPanel(BorderLayout()).apply {
+            background = BrowserUi.chrome
+            minimumSize = JBUI.size(125, 0)
+            add(JPanel(BorderLayout()).apply {
+                background = BrowserUi.chrome
+                border = JBUI.Borders.empty(4, 10, 4, 4)
+                add(BrowserUi.label("BUCKETS"), BorderLayout.CENTER)
+                add(toolbar("Buckets", BrowserUi.action("Bucket 管理", AllIcons.Actions.MoreHorizontal, false,
+                    { !busy && profile != null }) { showPopup(bucketPopup(), it) }).component, BorderLayout.EAST)
+            }, BorderLayout.NORTH)
+            add(bucketTree, BorderLayout.CENTER)
+        }
+        val split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, sidebar, files).apply {
+            name = "oss.split"; border = JBUI.Borders.empty(); dividerSize = JBUI.scale(1)
+            dividerLocation = JBUI.scale(190); resizeWeight = 0.0; isContinuousLayout = true
+        }
+        add(accountRow, BorderLayout.NORTH)
+        add(split, BorderLayout.CENTER)
+        add(BrowserUi.footer(status, summary), BorderLayout.SOUTH)
         table.columnModel.getColumn(0).cellRenderer = object : DefaultTableCellRenderer() {
+            init { putClientProperty("html.disable", true) }
             override fun getTableCellRendererComponent(t: JTable, value: Any?, selected: Boolean, focus: Boolean, row: Int, column: Int): java.awt.Component {
                 super.getTableCellRendererComponent(t, value, selected, focus, row, column)
                 icon = if (entries.getOrNull(t.convertRowIndexToModel(row))?.directory == true) AllIcons.Nodes.Folder else AllIcons.FileTypes.Any_type
+                border = JBUI.Borders.empty(0, 12); iconTextGap = JBUI.scale(8)
                 return this
             }
         }
+        for (column in 1..3) table.columnModel.getColumn(column).cellRenderer = object : DefaultTableCellRenderer() {
+            override fun getTableCellRendererComponent(t: JTable, value: Any?, selected: Boolean, focus: Boolean, row: Int, col: Int): java.awt.Component {
+                val entry = entries[t.convertRowIndexToModel(row)]
+                val text = when (column) {
+                    1 -> if (entry.directory) "—" else formatSize(entry.size)
+                    2 -> entry.modified?.let { DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm").withZone(ZoneId.systemDefault()).format(it) }.orEmpty()
+                    else -> entry.storageClass
+                }
+                super.getTableCellRendererComponent(t, text, selected, focus, row, col)
+                horizontalAlignment = if (column == 1) SwingConstants.RIGHT else SwingConstants.LEFT
+                if (!selected) foreground = BrowserUi.muted
+                border = JBUI.Borders.empty(0, 12)
+                return this
+            }
+        }
+        val columns = (0..3).map { table.columnModel.getColumn(it) }
+        listOf(370, 90, 165, 100).forEachIndexed { index, width -> columns[index].preferredWidth = JBUI.scale(width) }
+        columns[0].minWidth = JBUI.scale(120)
+        columns[1].minWidth = JBUI.scale(100)
+        scroll.viewport.addComponentListener(object : ComponentAdapter() {
+            override fun componentResized(e: ComponentEvent) {
+                val width = scroll.viewport.extentSize.width
+                val wanted = listOf(0, 1) + (if (width >= JBUI.scale(520)) listOf(2) else emptyList()) + (if (width >= JBUI.scale(700)) listOf(3) else emptyList())
+                val visible = (0 until table.columnCount).map { table.columnModel.getColumn(it).modelIndex }
+                if (visible != wanted) { columns.forEach { table.removeColumn(it) }; wanted.forEach { table.addColumn(columns[it]) } }
+                table.setSize(width, table.height); table.doLayout()
+                scroll.viewport.viewPosition = java.awt.Point(0, scroll.viewport.viewPosition.y)
+                connectionInfo.isVisible = this@OssBrowserPanel.width >= JBUI.scale(800)
+            }
+        })
+        table.selectionModel.addListSelectionListener { if (!it.valueIsAdjusting) updateSelection() }
         table.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 if (e.clickCount == 2 && !busy) selected().singleOrNull()?.let { if (it.directory) load(it.key) else preview() }
@@ -147,17 +223,30 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
             }
         }
         profileBox.addActionListener { if (!updating) disconnect() }
-        bucketBox.addActionListener { if (!updating && profile != null && !busy) openBucket() }
-        path.addActionListener { if (!busy && profile != null) load(StorageOperations.folder(path.text)) }
         search.addActionListener { if (!busy && profile != null) load(currentPrefix) }
         reloadProfiles()
     }
 
-    private fun itSource(): JComponent = controls.last()
-    private fun button(text: String, action: () -> Unit): JButton = JButton(text).apply { addActionListener { action() }; controls.add(this) }
-    private fun operationButton(text: String, action: () -> Unit): JButton = button(text, action).also { operationControls.add(it) }
+    private fun ready() = !disposed && !busy && profile != null && currentBucket.isNotBlank()
+    private fun toolbar(place: String, vararg actions: com.intellij.openapi.actionSystem.AnAction) = BrowserUi.toolbar("WLZN.OSS.$place", this, *actions).also { toolbars.add(it) }
+    private fun showPopup(menu: JPopupMenu, event: AnActionEvent) {
+        val anchor = event.inputEvent?.component as? JComponent ?: this
+        menu.show(anchor, 0, anchor.height)
+    }
+    private fun bucketPopup() = JPopupMenu().apply {
+        add(JMenuItem("打开指定 Bucket…").apply { addActionListener { openBucket() } })
+        add(JMenuItem("新建 Bucket").apply { addActionListener { createBucket() } })
+        addSeparator()
+        add(JMenuItem("删除空 Bucket").apply { isEnabled = currentBucket.isNotBlank(); addActionListener { deleteBucket() } })
+    }
     private fun selected(): List<ObjectEntry> = table.selectedRows.map { entries.getOrNull(table.convertRowIndexToModel(it)) }.filterNotNull()
-    private fun setStatus(text: String) { status.text = " $text" }
+    private fun setStatus(text: String) { status.text = text; status.toolTipText = text }
+    private fun updateSelection() {
+        val selection = selected()
+        summary.text = "${entries.size} 项" + if (selection.isNotEmpty()) " · 已选 ${selection.size} 项" else ""
+        if (selection.isNotEmpty() && !busy) setStatus(if (selection.size == 1) selection.single().let { "${it.displayName(currentPrefix)} · ${if (it.directory) "目录" else formatSize(it.size)}" } else "已选择 ${selection.size} 项")
+        toolbars.forEach { it.updateActionsAsync() }
+    }
 
     private fun reloadProfiles() {
         val previous = (profileBox.selectedItem as? ConnectionProfile)?.id ?: settings.selectedProfileId()
@@ -172,8 +261,8 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         generation++
         profile = null
         currentBucket = ""; currentPrefix = ""; listingToken = null; entries = emptyList()
-        updating = true; bucketBox.removeAllItems(); updating = false
-        path.text = ""; search.text = ""; model.fireTableDataChanged()
+        bucketTree.setConnection(null)
+        pathBar.showPath(""); search.text = ""; model.fireTableDataChanged()
         setBusy(false)
         setStatus(if (profileBox.itemCount == 0) "请先在 Settings → Tools → WLZN OSS Browser 添加连接" else "请选择连接并点击“连接”")
     }
@@ -182,7 +271,7 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         val chosen = (profileBox.selectedItem as? ConnectionProfile)?.copy() ?: return
         background("连接 ${chosen.name}", {
             StorageClients.forgetRegions(chosen.id)
-            ConnectionAccess.open(chosen).use { client ->
+            openClient(chosen).use { client ->
                 if (chosen.bucket.isNotBlank()) {
                     client.list(chosen.bucket, chosen.prefix)
                     listOf(BucketEntry(chosen.bucket))
@@ -191,9 +280,7 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         }) { buckets ->
             profile = chosen
             settings.selectProfile(chosen.id)
-            updating = true
-            bucketBox.model = DefaultComboBoxModel(buckets.map { it.name }.toTypedArray())
-            updating = false
+            bucketTree.setConnection(chosen, buckets)
             currentBucket = buckets.firstOrNull()?.name.orEmpty()
             setStatus("已连接 ${chosen.name} · ${chosen.provider.label} · ${if (chosen.endpoint.isBlank()) "自动识别各 Bucket 区域" else chosen.initialRegion()}")
             if (currentBucket.isNotEmpty()) load(StorageOperations.folder(chosen.prefix))
@@ -201,11 +288,20 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
     }
 
     private fun openBucket() {
-        val value = bucketBox.editor.item?.toString()?.trim().orEmpty()
+        val value = Messages.showInputDialog(project, "输入要访问的 Bucket 名称（无需列举全部 Bucket 的权限）：", "打开 Bucket", null, currentBucket, null)?.trim().orEmpty()
         if (value.isBlank()) return
+        navigateTo(value, "")
+    }
+
+    private fun navigateTo(value: String, prefix: String) {
+        if (busy || profile == null || value.isBlank()) return
+        if (value != currentBucket) {
+            entries = emptyList(); listingToken = null; currentPrefix = ""
+            model.fireTableDataChanged(); pathBar.showPath("")
+        }
         currentBucket = value
         search.text = ""
-        load("")
+        load(prefix)
     }
 
     private fun load(prefix: String, append: Boolean = false) {
@@ -213,12 +309,16 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         val bucket = currentBucket.takeIf { it.isNotBlank() } ?: return
         val token = if (append) listingToken else null
         val query = prefix + search.text
-        background("列举对象", { ConnectionAccess.open(connection).use { it.list(bucket, query, token) } }) { page ->
+        background("列举对象", { openClient(connection).use { it.list(bucket, query, token) } }) { page ->
             currentPrefix = prefix
-            path.text = prefix
+            pathBar.showPath(prefix)
+            bucketTree.selectLocation(bucket, prefix)
             entries = if (append) (entries + page.entries).distinctBy { it.key } else page.entries
             listingToken = page.nextToken
             model.fireTableDataChanged()
+            nextButton.isVisible = listingToken != null
+            updateSelection()
+            updateEmptyText()
             setStatus("${connection.name} · $bucket/$prefix · 已加载 ${entries.size} 项${if (listingToken != null) "，还有下一页" else ""}")
         }
     }
@@ -230,9 +330,9 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         if (!region.matches(Regex("[a-z0-9]+(?:-[a-z0-9]+)+"))) { Messages.showWarningDialog(project, "请输入有效区域，例如 cn-hangzhou / us-east-1", "创建区域"); return }
         val name = Messages.showInputDialog(project, "新 Bucket 名称（区域：$region；使用服务端默认安全策略）", "新建 Bucket", null)?.trim() ?: return
         if (name.isBlank()) return
-        background("创建 Bucket", { ConnectionAccess.open(connection).use { if (automatic) it.createBucket(name, region) else it.createBucket(name) } }) {
-            updating = true; bucketBox.addItem(name); bucketBox.selectedItem = name; updating = false
-            currentBucket = name; load("")
+        background("创建 Bucket", { openClient(connection).use { if (automatic) it.createBucket(name, region) else it.createBucket(name) } }) {
+            bucketTree.addBucket(BucketEntry(name, region))
+            navigateTo(name, "")
         }
     }
 
@@ -241,9 +341,10 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         val bucket = currentBucket.takeIf { it.isNotBlank() } ?: return
         val typed = Messages.showInputDialog(project, "删除 $bucket？仅允许删除空 Bucket，不会自动清空对象。\n输入完整 Bucket 名称确认：", "删除 Bucket", Messages.getWarningIcon()) ?: return
         if (typed != bucket) return
-        background("删除 Bucket", { ConnectionAccess.open(connection).use { it.deleteBucket(bucket) } }) {
-            updating = true; bucketBox.removeItem(bucket); updating = false
-            currentBucket = ""; entries = emptyList(); model.fireTableDataChanged(); setStatus("Bucket 已删除")
+        background("删除 Bucket", { openClient(connection).use { it.deleteBucket(bucket) } }) {
+            bucketTree.removeBucket(bucket)
+            currentBucket = ""; currentPrefix = ""; listingToken = null; entries = emptyList()
+            model.fireTableDataChanged(); pathBar.showPath(""); updateSelection(); setStatus("Bucket 已删除")
         }
     }
 
@@ -276,7 +377,7 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         val root = chooser.selectedFile.toPath().toAbsolutePath().normalize()
         val overwrite = overwriteChoice("下载所选 ${selection.size} 项及其子目录。\n本地同名文件如何处理？") ?: return
         background("准备下载任务", {
-            ConnectionAccess.open(connection).use { client -> StorageOperations.expand(client, bucket, selection) { ProgressManager.checkCanceled() }.map { entry ->
+            openClient(connection).use { client -> StorageOperations.expand(client, bucket, selection) { ProgressManager.checkCanceled() }.map { entry ->
                 val local = StorageOperations.safeDownloadPath(root, entry.key.removePrefix(prefix))
                 TransferRecord(profileId = connection.id, kind = TransferKind.DOWNLOAD, bucket = bucket, key = entry.key, localPath = local.toString(), overwrite = overwrite)
             } }
@@ -303,11 +404,19 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
     }
 
     private fun morePopup() = JPopupMenu().apply {
-        listOf("刷新" to { load(currentPrefix) }, "复制路径" to { copyPaths() }, "临时分享链接" to { share() },
+        listOf("刷新" to { refreshCurrent() }, "复制路径" to { copyPaths() }, "临时分享链接" to { share() },
             "复制到…" to { copyOrMove(false) }, "移动到…" to { copyOrMove(true) }, "重命名" to { rename() },
             "元数据" to { metadata() }, "读写权限 ACL" to { acl() }, "解冻归档对象" to { restore() },
             "未完成分片" to { multipart() }, "删除所选" to { deleteObjects() }).forEach { (label, action) ->
-            add(JMenuItem(label).apply { addActionListener { if (!busy) action() } })
+            add(JMenuItem(label).apply {
+                isEnabled = ready() && when (label) {
+                    "刷新", "未完成分片" -> true
+                    "复制路径", "复制到…", "移动到…", "删除所选" -> selected().isNotEmpty()
+                    "重命名" -> selected().size == 1
+                    else -> selected().singleOrNull()?.directory == false
+                }
+                addActionListener { if (ready()) action() }
+            })
         }
     }
 
@@ -322,7 +431,7 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         if (seconds !in 1..604800) { Messages.showWarningDialog(project, "有效期必须为 1–604800 秒", "临时链接"); return }
         val connection = profile ?: return
         val bucket = currentBucket
-        background("生成临时分享链接", { ConnectionAccess.open(connection).use { it.signedUrl(bucket, entry.key, Duration.ofSeconds(seconds)) } }) { url ->
+        background("生成临时分享链接", { openClient(connection).use { it.signedUrl(bucket, entry.key, Duration.ofSeconds(seconds)) } }) { url ->
             CopyPasteManager.getInstance().setContents(StringSelection(url))
             TextObjectDialog("临时链接（已复制）", url, false, "持有该链接即可在有效期内访问对象，请按需分享。").showAndGet()
         }
@@ -381,7 +490,7 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         val entry = selected().singleOrNull()?.takeUnless { it.directory } ?: return
         val connection = profile ?: return
         val bucket = currentBucket
-        background("读取 ACL", { ConnectionAccess.open(connection).use { it.acl(bucket, entry.key) } }) { existing ->
+        background("读取 ACL", { openClient(connection).use { it.acl(bucket, entry.key) } }) { existing ->
             val values = if (connection.provider == Provider.ALIYUN_OSS) listOf(ObjectAcl.DEFAULT, ObjectAcl.PRIVATE, ObjectAcl.PUBLIC_READ, ObjectAcl.PUBLIC_READ_WRITE)
                 else listOf(ObjectAcl.PRIVATE, ObjectAcl.PUBLIC_READ)
             val chosen = JOptionPane.showInputDialog(this, "当前：$existing\n选择新权限（S3 公共访问阻止策略可能禁止修改）：", "对象 ACL", JOptionPane.QUESTION_MESSAGE,
@@ -395,7 +504,7 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         val connection = profile ?: return
         val bucket = currentBucket
         val prefix = currentPrefix
-        background("列举未完成分片", { ConnectionAccess.open(connection).use { client ->
+        background("列举未完成分片", { openClient(connection).use { client ->
             val result = mutableListOf<MultipartEntry>()
             var key: String? = null; var upload: String? = null
             do {
@@ -419,7 +528,7 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         val entry = selected().singleOrNull()?.takeUnless { it.directory } ?: return
         val connection = profile ?: return
         val bucket = currentBucket
-        background("读取元数据", { ConnectionAccess.open(connection).use { it.head(bucket, entry.key) ?: throw StorageOperationException("对象不存在") } }) { details ->
+        background("读取元数据", { openClient(connection).use { it.head(bucket, entry.key) ?: throw StorageOperationException("对象不存在") } }) { details ->
             val values = linkedMapOf<String, Any>("contentType" to details.contentType, "cacheControl" to details.cacheControl,
                 "contentDisposition" to details.contentDisposition, "contentEncoding" to details.contentEncoding,
                 "contentLanguage" to details.contentLanguage, "userMetadata" to details.userMetadata)
@@ -448,7 +557,7 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         if (entry.directory) { load(entry.key); return }
         val connection = profile ?: return
         val bucket = currentBucket
-        background("读取预览", { ConnectionAccess.open(connection).use { client ->
+        background("读取预览", { openClient(connection).use { client ->
             val details = client.head(bucket, entry.key) ?: throw StorageOperationException("对象不存在")
             require(details.size <= StorageOperations.MAX_PREVIEW_BYTES) { "预览限制为 5 MiB，请下载大文件后查看" }
             val bytes = client.read(bucket, entry.key, etag = details.etag, expectedSize = details.size).use { it.readNBytes((StorageOperations.MAX_PREVIEW_BYTES + 1).toInt()) }
@@ -500,9 +609,16 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
         val connection = profile?.copy() ?: return
         val bucket = currentBucket
         val prefix = currentPrefix
-        background(title, { ConnectionAccess.open(connection).use { action(it, connection, bucket, prefix) } }) {
+        background(title, { openClient(connection).use { action(it, connection, bucket, prefix) } }) {
+            bucketTree.refreshLocation(bucket, prefix)
             load(prefix)
         }
+    }
+
+    private fun refreshCurrent() {
+        if (!ready()) return
+        bucketTree.refreshLocation(currentBucket, currentPrefix)
+        load(currentPrefix)
     }
 
     private fun <T> background(title: String, action: () -> T, success: (T) -> Unit) {
@@ -527,6 +643,7 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
             override fun onThrowable(error: Throwable) {
                 if (!alive(request)) return
                 val message = StorageErrors.describe(error)
+                if (currentBucket.isNotBlank()) bucketTree.selectLocation(currentBucket, currentPrefix)
                 setStatus("$title：$message")
                 Messages.showErrorDialog(project, "$message\n\n批量操作可能已部分完成，请刷新核对。", title)
             }
@@ -537,13 +654,33 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
     private fun alive(request: Int) = !disposed && !project.isDisposed && request == generation
     private fun setBusy(value: Boolean) {
         busy = value
-        controls.forEach { it.isEnabled = !value }
-        operationControls.forEach { it.isEnabled = !value && profile != null }
-        table.isEnabled = !value && profile != null
+        uploadButton.isEnabled = ready()
+        nextButton.isEnabled = ready() && listingToken != null
+        nextButton.isVisible = listingToken != null
+        table.isEnabled = ready()
         profileBox.isEnabled = !value
-        bucketBox.isEnabled = !value && profile != null
-        path.isEnabled = !value && profile != null
+        bucketTree.setNavigationEnabled(!value && profile != null)
+        pathBar.setNavigationEnabled(ready())
         search.isEnabled = !value && profile != null
+        connectionInfo.text = if (value) "正在连接 / 读取…" else if (profile == null) "未连接" else "${if (profile?.endpoint.isNullOrBlank()) "自动区域" else profile?.initialRegion()} · 已连接"
+        connectionInfo.foreground = if (profile != null && !value) BrowserUi.green else BrowserUi.muted
+        updateEmptyText()
+        toolbars.forEach { it.updateActionsAsync() }
     }
-    override fun dispose() { disposed = true; generation++ }
+
+    private fun updateEmptyText() {
+        table.emptyText.clear()
+        when {
+            busy -> table.emptyText.appendText("正在读取对象…", SimpleTextAttributes.GRAYED_ATTRIBUTES)
+            profile == null -> {
+                table.emptyText.appendText("连接存储账号，开始浏览文件", SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
+                table.emptyText.appendSecondaryText("在上方选择账号并点击连接", SimpleTextAttributes.GRAYED_ATTRIBUTES, null)
+            }
+            else -> {
+                table.emptyText.appendText(if (search.text.isNotEmpty()) "没有匹配的文件" else "这个目录还没有文件", SimpleTextAttributes.REGULAR_BOLD_ATTRIBUTES)
+                table.emptyText.appendSecondaryText(if (search.text.isNotEmpty()) "清空名称前缀后重试" else "点击“上传”或将文件拖到这里", SimpleTextAttributes.GRAYED_ATTRIBUTES, null)
+            }
+        }
+    }
+    override fun dispose() { disposed = true; generation++; bucketTree.dispose() }
 }

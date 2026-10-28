@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.wlzn"
-version = "1.0.1"
+version = "1.0.2"
 
 kotlin {
     jvmToolchain(21)
@@ -48,6 +48,8 @@ intellijPlatform {
         }
         changeNotes = """
             <ul>
+                <li>新增左侧 Bucket / 多级目录树，按需分页加载并与右侧文件列表、面包屑联动。</li>
+                <li>重新整理原生工具栏和深浅主题布局，传输任务支持进度条、状态过滤及行内操作。</li>
                 <li>支持同一账号自动访问多个区域，Region / Endpoint 可留空。</li>
                 <li>修复配置校验失败后 OK 无法再次点击，以及 OSS 新上传空分片列表导致空指针的问题。</li>
                 <li>沿用 WLZN 系列插件固定图标，完善传输异常诊断。</li>
