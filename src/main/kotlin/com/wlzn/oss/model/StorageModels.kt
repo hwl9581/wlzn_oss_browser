@@ -24,8 +24,7 @@ data class ConnectionProfile(
 
     fun validate() {
         require(name.isNotBlank()) { "连接名称不能为空" }
-        require(region.matches(Regex("[a-z0-9-]+"))) { "请填写 Region，例如 cn-hangzhou 或 us-east-1" }
-        require(provider != Provider.ALIYUN_OSS || endpoint.isNotBlank()) { "阿里云 OSS 需要填写 Endpoint" }
+        require(region.isBlank() || region.matches(Regex("[a-z0-9-]+"))) { "Region 格式无效，例如 cn-hangzhou 或 us-east-1；可留空自动识别" }
         if (endpoint.isNotBlank()) {
             val uri = URI(endpointUrl())
             require(uri.scheme in setOf("http", "https") && uri.host != null && uri.userInfo == null &&
@@ -33,6 +32,14 @@ data class ConnectionProfile(
                 "Endpoint 只填写 http(s)://主机[:端口]，不要包含 Bucket、路径或凭据"
             }
         }
+    }
+
+    fun initialRegion(): String = region.ifBlank {
+        val host = endpointUrl().takeIf { it.isNotBlank() }?.let { URI(it).host }.orEmpty()
+        val pattern = if (provider == Provider.ALIYUN_OSS) "oss-([a-z0-9-]+?)(?:-internal)?\\.aliyuncs\\.com"
+            else "s3[.-]([a-z0-9-]+)\\.amazonaws\\.com(?:\\.cn)?"
+        Regex(pattern).matchEntire(host)?.groupValues?.get(1)
+            ?: if (provider == Provider.ALIYUN_OSS) "cn-hangzhou" else "us-east-1"
     }
 
     fun endpointUrl(): String = endpoint.trim().let {

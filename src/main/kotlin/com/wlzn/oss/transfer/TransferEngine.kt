@@ -86,6 +86,7 @@ class TransferEngine(private val checkpoints: CheckpointStore) {
         }
         require(Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) { "本地文件不存在" }
         val size = Files.size(path)
+        progress(0, size)
         var cp = checkpoint(job, fingerprint)
         val destination = client.head(job.bucket, job.key)
         if (cp != null && destination?.userMetadata?.get("wlzn-transfer-id") == job.id && destination.size == size) {

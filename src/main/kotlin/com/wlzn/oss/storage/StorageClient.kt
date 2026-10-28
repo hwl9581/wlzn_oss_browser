@@ -9,6 +9,8 @@ import java.time.Duration
 interface StorageClient : Closeable {
     fun buckets(): List<BucketEntry>
     fun createBucket(name: String)
+    fun createBucket(name: String, region: String) { throw StorageOperationException("请通过自动区域连接创建指定区域的 Bucket") }
+    fun bucketRegion(bucket: String): String { throw StorageOperationException("当前连接无法自动识别 Bucket 区域，请手动配置") }
     fun deleteBucket(name: String)
     fun list(bucket: String, prefix: String, token: String? = null, recursive: Boolean = false): ObjectPage
     fun head(bucket: String, key: String): ObjectDetails?

@@ -16,6 +16,42 @@ import javax.imageio.ImageIO
 import javax.swing.*
 
 class PluginPlatformTest : BasePlatformTestCase() {
+    fun testProfileDialogRecoversAfterInvalidOkAndNeverAcceptsMissingCredentials() {
+        val dialog = OssSettingsConfigurable.ProfileDialog(null)
+        try {
+            // 平台 headless peer 不保留 rootPane，从校验关联的真实输入框找到原生表单。
+            var form: Container = dialog.performValidateAll().single().component!!
+            while (form.parent != null) form = form.parent
+            val fields = components(form).filterIsInstance<JTextField>().associateBy { it.name }
+            val ok = components(form).filterIsInstance<JButton>().first { it.text == "OK" }
+            ok.doClick()
+            com.intellij.util.ui.UIUtil.dispatchAllInvocationEvents()
+            assertFalse(dialog.isOK); assertFalse(dialog.isDisposed)
+            assertFalse(dialog.isOKActionEnabled)
+            fields.getValue("connectionName").text = "多区域账号"
+            fields.getValue("accessKeyId").text = "unit-test-key"
+            // 缺少 Secret 时仍需阻断，不能通过一直启用 OK 来绕过校验。
+            com.intellij.testFramework.PlatformTestUtil.waitWithEventsDispatching("缺少凭据仍必须校验失败", { dialog.performValidateAll().isNotEmpty() }, 2000)
+            assertFalse(dialog.isOK)
+            fields.getValue("accessKeySecret").text = "unit-test-secret"
+            com.intellij.testFramework.PlatformTestUtil.waitWithEventsDispatching("修正输入后 OK 必须恢复", { dialog.isOKActionEnabled }, 5000)
+            assertTrue(dialog.performValidateAll().isEmpty())
+            assertEquals("", dialog.profile().region); assertEquals("", dialog.profile().endpoint)
+            ok.doClick()
+            assertTrue(dialog.isOK)
+        } finally { dialog.disposeIfNeeded() }
+    }
+
+    fun testEmptyRegionAndEndpointAllowedForBothCloudsAndManualEndpointRetained() {
+        Provider.entries.forEach { provider ->
+            val profile = ConnectionProfile(name = "自动区域", provider = provider)
+            profile.validate()
+            assertEquals("", profile.region); assertEquals("", profile.endpoint)
+        }
+        assertEquals("cn-shanghai", ConnectionProfile(name = "内网", endpoint = "oss-cn-shanghai-internal.aliyuncs.com").initialRegion())
+        assertEquals("eu-west-1", ConnectionProfile(name = "S3", provider = Provider.AMAZON_S3, endpoint = "https://s3.eu-west-1.amazonaws.com").initialRegion())
+    }
+
     fun testStateIsDefensivelyCopiedAndContainsNoCredentials() {
         val settings = OssSettings()
         val profile = ConnectionProfile(name = "S3 开发环境", provider = Provider.AMAZON_S3, region = "us-east-1")
@@ -57,5 +93,6 @@ class PluginPlatformTest : BasePlatformTestCase() {
     }
 
     private fun layout(container: Container) { container.doLayout(); container.components.filterIsInstance<Container>().forEach { layout(it) } }
+    private fun components(container: Container): List<java.awt.Component> = container.components.flatMap { listOf(it) + if (it is Container) components(it) else emptyList() }
     private fun java.awt.Graphics2D.useGraphics(action: (java.awt.Graphics2D) -> Unit) { try { action(this) } finally { dispose() } }
 }

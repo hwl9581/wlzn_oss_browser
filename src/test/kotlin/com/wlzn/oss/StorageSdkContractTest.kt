@@ -4,6 +4,8 @@ import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import com.wlzn.oss.model.*
 import com.wlzn.oss.storage.StorageClients
+import com.wlzn.oss.storage.RegionalStorageClient
+import com.wlzn.oss.transfer.*
 import org.junit.Assert.*
 import org.junit.Test
 import java.net.InetSocketAddress
@@ -20,6 +22,12 @@ class StorageSdkContractTest {
         val requests = CopyOnWriteArrayList<Request>()
         var ignoreRange = false
         var versioned = false
+        var denyBucketHead = false
+        var locationRedirect = false
+        var emptyPartListing = false
+        var missingObjectHead = false
+        var truncatedParts = false
+        val remoteRegion get() = if (provider == Provider.ALIYUN_OSS) "cn-shanghai" else "us-west-2"
         private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
             createContext("/") { handle(it) }
             start()
@@ -40,7 +48,16 @@ class StorageSdkContractTest {
             exchange.responseHeaders.add("ETag", "\"abc\"")
             exchange.responseHeaders.add("Content-Type", "application/xml")
             when {
+                request.method == "HEAD" && request.path.trim('/').split('/').size == 1 -> {
+                    exchange.responseHeaders.add("x-amz-bucket-region", remoteRegion)
+                    if (denyBucketHead) status = 403
+                }
+                "location" in query -> if (locationRedirect) {
+                    status = 301
+                    body = "<Error><Code>PermanentRedirect</Code><Message>Use the bucket endpoint</Message><RequestId>unit-request</RequestId><HostId>unit-host</HostId><Endpoint>remote-bucket.oss-$remoteRegion.aliyuncs.com</Endpoint></Error>"
+                } else body = "<LocationConstraint>oss-$remoteRegion</LocationConstraint>"
                 request.method == "HEAD" -> {
+                    if (missingObjectHead) { status = 404; exchange.responseHeaders.add("x-oss-error-code", "NoSuchKey") }
                     exchange.responseHeaders.set("Content-Length", "3")
                     exchange.responseHeaders.set("Content-Type", "text/plain")
                     exchange.responseHeaders.add("Last-Modified", "Tue, 27 Oct 2026 00:00:00 GMT")
@@ -59,7 +76,9 @@ class StorageSdkContractTest {
                     <Contents><Key>a.txt</Key><LastModified>2026-10-27T00:00:00.000Z</LastModified><ETag>"abc"</ETag><Size>3</Size><StorageClass>STANDARD</StorageClass></Contents><CommonPrefixes><Prefix>folder/</Prefix></CommonPrefixes></ListBucketResult>"""
                 request.method == "GET" && request.path == "/" -> body = """<ListAllMyBucketsResult><Owner><ID>owner</ID><DisplayName>owner</DisplayName></Owner><Buckets><Bucket><Name>unit-bucket</Name><CreationDate>2026-10-27T00:00:00.000Z</CreationDate><Location>oss-cn-hangzhou</Location></Bucket></Buckets></ListAllMyBucketsResult>"""
                 request.method == "POST" && "uploads" in query -> body = "<InitiateMultipartUploadResult><Bucket>unit-bucket</Bucket><Key>a.txt</Key><UploadId>unit-upload</UploadId></InitiateMultipartUploadResult>"
-                request.method == "GET" && "uploadId" in query -> body = """<ListPartsResult><Bucket>unit-bucket</Bucket><Key>a.txt</Key><UploadId>unit-upload</UploadId><MaxParts>1000</MaxParts><IsTruncated>false</IsTruncated><NextPartNumberMarker>1</NextPartNumberMarker><Part><PartNumber>1</PartNumber><LastModified>2026-10-27T00:00:00.000Z</LastModified><ETag>"abc"</ETag><Size>3</Size></Part></ListPartsResult>"""
+                request.method == "GET" && "uploadId" in query -> body = if (emptyPartListing)
+                    "<ListPartsResult><Bucket>unit-bucket</Bucket><Key>a.txt</Key><UploadId>unit-upload</UploadId><MaxParts>1000</MaxParts><IsTruncated>$truncatedParts</IsTruncated></ListPartsResult>"
+                else """<ListPartsResult><Bucket>unit-bucket</Bucket><Key>a.txt</Key><UploadId>unit-upload</UploadId><MaxParts>1000</MaxParts><IsTruncated>false</IsTruncated><NextPartNumberMarker>1</NextPartNumberMarker><Part><PartNumber>1</PartNumber><LastModified>2026-10-27T00:00:00.000Z</LastModified><ETag>"abc"</ETag><Size>3</Size></Part></ListPartsResult>"""
                 request.method == "POST" && "uploadId" in query -> body = "<CompleteMultipartUploadResult><Location>$url/unit-bucket/a.txt</Location><Bucket>unit-bucket</Bucket><Key>a.txt</Key><ETag>\"abc\"</ETag></CompleteMultipartUploadResult>"
                 request.method == "PUT" && request.header("$prefix-copy-source") != null -> body = "<CopyObjectResult><LastModified>2026-10-27T00:00:00.000Z</LastModified><ETag>\"abc\"</ETag></CopyObjectResult>"
                 request.method == "GET" -> {
@@ -91,6 +110,73 @@ class StorageSdkContractTest {
 
     @Test fun `OSS SDK signs lists reads and rejects ignored ranges`() = readContract(Provider.ALIYUN_OSS)
     @Test fun `S3 SDK signs lists reads and rejects ignored ranges`() = readContract(Provider.AMAZON_S3)
+    @Test fun `OSS automatically routes object and presigned requests to bucket region`() = regionalContract(Provider.ALIYUN_OSS)
+    @Test fun `S3 automatically routes object and presigned requests using HeadBucket region`() = regionalContract(Provider.AMAZON_S3)
+    private fun regionalContract(provider: Provider) {
+        Endpoint(provider).use { endpoint ->
+            val initial = if (provider == Provider.ALIYUN_OSS) "cn-hangzhou" else "us-east-1"
+            val credentials = StorageCredentials("unit-test-key", "unit-test-secret")
+            val profile = ConnectionProfile(name = "固定本机模拟端点", provider = provider, endpoint = endpoint.url, region = initial, pathStyle = true)
+            val opened = mutableListOf<String>()
+            val catalogue = StorageClients.open(profile, credentials)
+            RegionalStorageClient(catalogue, initial, mutableMapOf()) { region ->
+                opened.add(region)
+                StorageClients.open(profile.copy(region = region), credentials)
+            }.use { client ->
+                client.list("remote-bucket", "")
+                assertEquals(listOf(endpoint.remoteRegion), opened)
+                assertTrue(endpoint.requests.last().header("authorization").orEmpty().contains("/${endpoint.remoteRegion}/"))
+                val signed = java.net.URLDecoder.decode(client.signedUrl("remote-bucket", "a.txt", Duration.ofMinutes(5)), Charsets.UTF_8)
+                assertTrue(signed.contains("/${endpoint.remoteRegion}/"))
+                client.head("remote-bucket", "a.txt")
+                val discoveries = endpoint.requests.count { "location" in it.query || (it.method == "HEAD" && it.path == "/remote-bucket") }
+                assertEquals(1, discoveries)
+                assertEquals(initial, profile.region)
+                assertFalse(endpoint.requests.any { it.method == "GET" && it.path == "/" })
+            }
+        }
+    }
+
+    @Test fun `S3 discovers bucket region from denied HeadBucket without guessing`() = withClient(Provider.AMAZON_S3) { endpoint, client ->
+        endpoint.denyBucketHead = true
+        assertEquals(endpoint.remoteRegion, client.bucketRegion("remote-bucket"))
+    }
+    @Test fun `OSS discovers bucket region from official redirect endpoint`() = withClient(Provider.ALIYUN_OSS) { endpoint, client ->
+        endpoint.locationRedirect = true
+        assertEquals(endpoint.remoteRegion, client.bucketRegion("remote-bucket"))
+    }
+    @Test fun `OSS new multipart upload accepts empty part listing without next marker`() = withClient(Provider.ALIYUN_OSS) { endpoint, client ->
+        endpoint.emptyPartListing = true
+        val id = client.beginUpload("unit-bucket", "a.txt", "image/jpeg", "new-upload")
+        assertTrue(client.parts("unit-bucket", "a.txt", id).isEmpty())
+    }
+    @Test fun `OSS truncated part listing with no next marker fails clearly without null pointer`() = brokenPagination(Provider.ALIYUN_OSS)
+    @Test fun `S3 truncated part listing with no next marker fails clearly without loop`() = brokenPagination(Provider.AMAZON_S3)
+    private fun brokenPagination(provider: Provider) = withClient(provider) { endpoint, client ->
+        endpoint.emptyPartListing = true; endpoint.truncatedParts = true
+        val failure = assertThrows(IllegalArgumentException::class.java) { client.parts("unit-bucket", "a.txt", "unit-upload") }
+        assertTrue(failure.message.orEmpty().contains("分页游标"))
+    }
+
+    @Test fun `OSS new image upload runs engine and SDK end to end with initially empty parts`() = newUpload(Provider.ALIYUN_OSS)
+    @Test fun `S3 new image upload runs engine and SDK end to end with initially empty parts`() = newUpload(Provider.AMAZON_S3)
+    private fun newUpload(provider: Provider) = withClient(provider) { endpoint, client ->
+        endpoint.emptyPartListing = true; endpoint.missingObjectHead = true
+        val root = java.nio.file.Files.createTempDirectory(java.io.File(System.getProperty("java.io.tmpdir")).canonicalFile.toPath(), "wlzn-sdk-upload-")
+        try {
+            val file = java.nio.file.Files.write(root.resolve("default.jpg"), byteArrayOf(0xff.toByte(), 0xd8.toByte(), 1, 2, 0xff.toByte(), 0xd9.toByte()))
+            val job = TransferRecord(profileId = "sdk-test", routeIdentity = "local-contract", bucket = "unit-bucket", key = "share/appconf/test/message/default.jpg", localPath = file.toString())
+            val progress = mutableListOf<Pair<Long, Long>>()
+            val result = TransferEngine(CheckpointStore(root.resolve("checkpoints"))).run(client, job, "unit-account", TransferControl()) { done, total -> progress.add(done to total) }
+            assertEquals(TransferStatus.COMPLETED, result)
+            assertEquals(0L to 6L, progress.first()); assertEquals(6L to 6L, progress.last())
+            assertTrue(endpoint.requests.any { it.method == "PUT" && "partNumber=" in it.query })
+            assertTrue(endpoint.requests.any { it.method == "POST" && "uploadId=" in it.query })
+            assertNull(CheckpointStore(root.resolve("checkpoints")).read(job.id))
+        } finally {
+            java.nio.file.Files.walk(root).use { it.sorted(Comparator.reverseOrder()).forEach { path -> java.nio.file.Files.delete(path) } }
+        }
+    }
     private fun readContract(provider: Provider) = withClient(provider) { endpoint, client ->
         assertEquals("unit-bucket", client.buckets().single().name)
         val page = client.list("unit-bucket", "")

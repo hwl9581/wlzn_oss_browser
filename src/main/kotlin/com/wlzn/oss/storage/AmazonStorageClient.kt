@@ -14,7 +14,16 @@ class AmazonStorageClient(private val client: S3Client, private val signer: S3Pr
         java.time.ZonedDateTime.parse(it, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant()
     }
     override fun close() { try { client.close() } finally { signer.close() } }
-    override fun buckets() = client.listBuckets().buckets().map { BucketEntry(it.name()) }
+    override fun buckets() = client.listBuckets().buckets().map { BucketEntry(it.name(), it.bucketRegion().orEmpty()) }
+    override fun bucketRegion(bucket: String): String = try {
+        client.headBucket { it.bucket(bucket) }.bucketRegion().orEmpty().ifBlank {
+            throw StorageOperationException("S3 未返回 Bucket 区域，请手动配置 Region 和 Endpoint")
+        }
+    } catch (e: S3Exception) {
+        // HeadBucket 即使无列举权限，也可能在响应头给出区域；不额外要求 GetBucketLocation 权限。
+        e.awsErrorDetails()?.sdkHttpResponse()?.firstMatchingHeader("x-amz-bucket-region")?.orElse(null)
+            ?.takeIf { it.isNotBlank() } ?: throw e
+    }
     override fun createBucket(name: String) {
         val region = client.serviceClientConfiguration().region().id()
         val request = CreateBucketRequest.builder().bucket(name)
@@ -171,8 +180,11 @@ class AmazonStorageClient(private val client: S3Client, private val signer: S3Pr
         do {
             val result = client.listParts { it.bucket(bucket).key(key).uploadId(uploadId).partNumberMarker(marker).maxParts(1000) }
             parts.addAll(result.parts().map { UploadPart(it.partNumber(), it.eTag(), it.size()) })
-            marker = result.nextPartNumberMarker()
-        } while (result.isTruncated == true)
+            if (result.isTruncated != true) break
+            val next = result.nextPartNumberMarker()
+            require(next != null && next > (marker ?: 0) && next <= 10000) { "S3 分片分页游标缺失或未前进，已停止续传检查" }
+            marker = next
+        } while (true)
         return parts
     }
 

@@ -23,8 +23,9 @@ class DestinationDialog(bucket: String, prefix: String, move: Boolean) : DialogW
         row("目标 Bucket：") { cell(bucketField) }
         row("目标目录：") { cell(prefixField) }
         row { cell(overwriteField) }
-        row { comment("同账号 / 云服务与 Region 内操作。复制非原子：写前检查无法阻止其他客户端同时写入；失败后请刷新检查。") }
+        row { comment("同账号、云服务及区域内操作。自动连接支持浏览多个区域，跨区域复制暂不支持。复制非原子，失败后请刷新检查。") }
     }
+    override fun continuousValidation() = true
     override fun doValidate() = if (bucket.isBlank()) ValidationInfo("目标 Bucket 不能为空", bucketField) else null
 }
 

@@ -144,6 +144,11 @@ class TransferManager : Disposable {
                 }
             }
         } catch (e: Exception) {
+            if (e !is IllegalArgumentException && e !is StorageOperationException &&
+                e !is com.aliyun.oss.OSSException && e !is software.amazon.awssdk.services.s3.model.S3Exception) {
+                com.intellij.openapi.diagnostic.Logger.getInstance(TransferManager::class.java)
+                    .warn("WLZN OSS transfer ${job.id} ${job.kind} failed\n${StorageErrors.diagnostic(e)}")
+            }
             synchronized(this) { tasks[id]?.apply { status = TransferStatus.FAILED; message = StorageErrors.describe(e) } }
         } finally {
             controls.remove(id, control)

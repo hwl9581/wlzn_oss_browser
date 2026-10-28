@@ -128,25 +128,28 @@ class OssSettingsConfigurable : Configurable {
 
     override fun disposeUIResources() { pending.clear(); profiles.clear(); model.clear() }
 
-    private class CredentialUpdate(val accessKeyId: String?, val secret: String?, val sessionToken: String?, val clearToken: Boolean) {
+    internal class CredentialUpdate(val accessKeyId: String?, val secret: String?, val sessionToken: String?, val clearToken: Boolean) {
         override fun toString() = "CredentialUpdate([REDACTED])"
     }
 
-    private class ProfileDialog(private val existing: ConnectionProfile?, update: CredentialUpdate?) : DialogWrapper(true) {
+    internal class ProfileDialog(private val existing: ConnectionProfile?, update: CredentialUpdate? = null) : DialogWrapper(true) {
         private val id = existing?.id ?: java.util.UUID.randomUUID().toString()
-        private val name = JTextField(existing?.name.orEmpty(), 30)
+        private val name = JTextField(existing?.name.orEmpty(), 30).apply { name = "connectionName" }
         private val provider = JComboBox(Provider.entries.toTypedArray()).apply { selectedItem = existing?.provider ?: Provider.ALIYUN_OSS }
-        private val endpoint = JTextField(existing?.endpoint.orEmpty(), 35)
-        private val region = JTextField(existing?.region.orEmpty(), 25)
+        private val endpoint = JTextField(existing?.endpoint.orEmpty(), 35).apply { name = "endpoint" }
+        private val region = JTextField(existing?.region.orEmpty(), 25).apply { name = "region" }
         private val bucket = JTextField(existing?.bucket.orEmpty(), 30)
         private val prefix = JTextField(existing?.prefix.orEmpty(), 30)
         private val pathStyle = JCheckBox("路径风格访问（兼容端点或本地测试）", existing?.pathStyle ?: false)
-        private val accessKey = JPasswordField(update?.accessKeyId.orEmpty(), 30)
-        private val secret = JPasswordField(update?.secret.orEmpty(), 30)
+        private val accessKey = JPasswordField(update?.accessKeyId.orEmpty(), 30).apply { name = "accessKeyId" }
+        private val secret = JPasswordField(update?.secret.orEmpty(), 30).apply { name = "accessKeySecret" }
         private val token = JPasswordField(update?.sessionToken.orEmpty(), 30)
         private val clearToken = JCheckBox("移除原有临时 Token，切换为长期密钥", update?.clearToken ?: false)
 
         init { title = if (existing == null) "添加对象存储连接" else "编辑对象存储连接"; init() }
+
+        // UI DSL 的 DialogPanel 默认关闭 DialogWrapper 的持续校验；这里的跨字段校验需要随输入恢复。
+        override fun continuousValidation() = true
 
         fun profile() = ConnectionProfile(id, name.text.trim(), provider.selectedItem as Provider,
             endpoint.text.trim(), region.text.trim(), bucket.text.trim(), prefix.text, pathStyle.isSelected, existing?.revision ?: 0)
@@ -162,8 +165,8 @@ class OssSettingsConfigurable : Configurable {
         override fun createCenterPanel(): JComponent = panel {
             row("连接名称：") { cell(name).columns(COLUMNS_LARGE) }
             row("云服务：") { cell(provider) }
-            row("Endpoint：") { cell(endpoint).columns(COLUMNS_LARGE).comment("OSS 必填；S3 留空使用 AWS 区域端点，例如 https://oss-cn-hangzhou.aliyuncs.com") }
-            row("Region：") { cell(region).comment("OSS：cn-hangzhou；S3：us-east-1。填写 Bucket 的实际区域") }
+            row("Endpoint（可选）：") { cell(endpoint).columns(COLUMNS_LARGE).comment("留空按 Bucket 自动选择官方端点，支持多个区域；自定义/内网端点在此手动指定") }
+            row("Region（可选）：") { cell(region).comment("留空自动识别 Bucket 区域。自定义端点可填写签名区域，例如 cn-hangzhou / us-east-1") }
             row("指定 Bucket：") { cell(bucket).comment("可选；填写后直接访问，无需列举账号下所有 Bucket 的权限") }
             row("起始目录：") { cell(prefix).comment("可选，例如 uploads/；用于初始定位，不替代服务端权限") }
             row { cell(pathStyle) }
@@ -176,12 +179,15 @@ class OssSettingsConfigurable : Configurable {
             }
         }
 
-        override fun doValidate(): ValidationInfo? = try {
-            profile().validate()
+        override fun doValidate(): ValidationInfo? {
+            if (name.text.isBlank()) return ValidationInfo("连接名称不能为空", name)
+            val current = profile()
+            if (current.region.isNotBlank() && !current.region.matches(Regex("[a-z0-9-]+"))) return ValidationInfo("Region 格式无效，可留空自动识别", region)
+            try { current.validate() } catch (e: Exception) { return ValidationInfo(e.message ?: "连接参数无效", endpoint) }
             val update = credentialUpdate()
-            if ((update?.accessKeyId == null) != (update?.secret == null)) ValidationInfo("修改长期凭据时必须同时填写 AccessKey ID 和 Secret")
-            else if (existing == null && (update?.accessKeyId == null || update.secret == null)) ValidationInfo("新连接需要填写 AccessKey ID 和 Secret")
+            return if ((update?.accessKeyId == null) != (update?.secret == null)) ValidationInfo("修改长期凭据时必须同时填写 AccessKey ID 和 Secret", if (update?.accessKeyId == null) accessKey else secret)
+            else if (existing == null && (update?.accessKeyId == null || update.secret == null)) ValidationInfo("新连接需要填写 AccessKey ID 和 Secret", accessKey)
             else null
-        } catch (e: Exception) { ValidationInfo(e.message ?: "连接参数无效") }
+        }
     }
 }

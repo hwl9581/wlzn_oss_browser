@@ -181,6 +181,7 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
     private fun connect() {
         val chosen = (profileBox.selectedItem as? ConnectionProfile)?.copy() ?: return
         background("连接 ${chosen.name}", {
+            StorageClients.forgetRegions(chosen.id)
             ConnectionAccess.open(chosen).use { client ->
                 if (chosen.bucket.isNotBlank()) {
                     client.list(chosen.bucket, chosen.prefix)
@@ -194,7 +195,7 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
             bucketBox.model = DefaultComboBoxModel(buckets.map { it.name }.toTypedArray())
             updating = false
             currentBucket = buckets.firstOrNull()?.name.orEmpty()
-            setStatus("已连接 ${chosen.name} · ${chosen.provider.label} · ${chosen.region}")
+            setStatus("已连接 ${chosen.name} · ${chosen.provider.label} · ${if (chosen.endpoint.isBlank()) "自动识别各 Bucket 区域" else chosen.initialRegion()}")
             if (currentBucket.isNotEmpty()) load(StorageOperations.folder(chosen.prefix))
         }
     }
@@ -224,9 +225,12 @@ class OssBrowserPanel(private val project: Project) : JPanel(BorderLayout(0, 4))
 
     private fun createBucket() {
         val connection = profile ?: return
-        val name = Messages.showInputDialog(project, "新 Bucket 名称（区域：${connection.region}；使用服务端默认安全策略）", "新建 Bucket", null)?.trim() ?: return
+        val automatic = connection.endpoint.isBlank()
+        val region = if (automatic) Messages.showInputDialog(project, "新 Bucket 所在区域（创建时需要明确选择，不影响账号访问其他区域）：", "创建区域", null, connection.initialRegion(), null)?.trim() ?: return else connection.initialRegion()
+        if (!region.matches(Regex("[a-z0-9]+(?:-[a-z0-9]+)+"))) { Messages.showWarningDialog(project, "请输入有效区域，例如 cn-hangzhou / us-east-1", "创建区域"); return }
+        val name = Messages.showInputDialog(project, "新 Bucket 名称（区域：$region；使用服务端默认安全策略）", "新建 Bucket", null)?.trim() ?: return
         if (name.isBlank()) return
-        background("创建 Bucket", { ConnectionAccess.open(connection).use { it.createBucket(name) } }) {
+        background("创建 Bucket", { ConnectionAccess.open(connection).use { if (automatic) it.createBucket(name, region) else it.createBucket(name) } }) {
             updating = true; bucketBox.addItem(name); bucketBox.selectedItem = name; updating = false
             currentBucket = name; load("")
         }

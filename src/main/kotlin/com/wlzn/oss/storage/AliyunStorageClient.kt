@@ -19,7 +19,15 @@ class AliyunStorageClient(private val client: OSS) : StorageClient {
         }
     }
     override fun close() = client.shutdown()
-    override fun buckets() = client.listBuckets().map { BucketEntry(it.name, it.location.orEmpty().removePrefix("oss-")) }
+    override fun buckets() = client.listBuckets().map { BucketEntry(it.name, it.region?.takeIf { region -> region.isNotBlank() } ?: it.location.orEmpty().removePrefix("oss-")) }
+    override fun bucketRegion(bucket: String): String = try {
+        client.getBucketLocation(bucket).removePrefix("oss-")
+    } catch (e: OSSException) {
+        // 旧端点可能以重定向错误返回真实端点；仅接受 OSS 官方域名，不跟随任意地址。
+        val endpoint = e.errorFields?.get("Endpoint").orEmpty()
+        val region = Regex("(?:${Regex.escape(bucket)}\\.)?oss-([a-z0-9-]+)\\.aliyuncs\\.com").matchEntire(endpoint)?.groupValues?.get(1)
+        if (e.errorCode in setOf("PermanentRedirect", "AuthorizationHeaderMalformed", "IncorrectEndpoint") && region != null) region else throw e
+    }
     override fun createBucket(name: String) { client.createBucket(CreateBucketRequest(name).apply { cannedACL = CannedAccessControlList.Private }) }
     override fun deleteBucket(name: String) { client.deleteBucket(name) }
 
@@ -172,8 +180,11 @@ class AliyunStorageClient(private val client: OSS) : StorageClient {
         do {
             val result = client.listParts(ListPartsRequest(bucket, key, uploadId).apply { if (marker > 0) partNumberMarker = marker; maxParts = 1000 })
             parts.addAll(result.parts.map { UploadPart(it.partNumber, it.eTag, it.size) })
-            marker = result.nextPartNumberMarker
-        } while (result.isTruncated)
+            if (!result.isTruncated) break
+            val next = result.nextPartNumberMarker
+            require(next != null && next > marker && next <= 10000) { "OSS 分片分页游标缺失或未前进，已停止续传检查" }
+            marker = next
+        } while (true)
         return parts
     }
 

@@ -2,6 +2,7 @@ package com.wlzn.oss
 
 import com.wlzn.oss.model.*
 import com.wlzn.oss.storage.StorageOperations
+import com.wlzn.oss.storage.StorageErrors
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -10,6 +11,15 @@ import java.nio.file.Files
 
 class StorageOperationsTest {
     @get:Rule val temporary = TemporaryFolder(java.io.File(System.getProperty("java.io.tmpdir")).canonicalFile)
+
+    @Test fun `unexpected transfer diagnostics retain code locations without exception secrets`() {
+        val error = NullPointerException("secret-value-and-signed-url").apply { initCause(IllegalStateException("session-token-value")) }
+        val diagnostic = StorageErrors.diagnostic(error)
+        assertTrue(diagnostic.contains("NullPointerException")); assertTrue(diagnostic.contains("StorageOperationsTest"))
+        assertFalse(diagnostic.contains("secret-value")); assertFalse(diagnostic.contains("session-token-value"))
+        assertTrue(StorageErrors.describe(error).contains("插件内部异常"))
+        assertFalse(StorageErrors.describe(error).contains("secret-value"))
+    }
 
     @Test fun `download rejects traversal absolute paths drive names and ambiguous segments`() {
         val root = temporary.root.toPath()
