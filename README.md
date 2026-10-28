@@ -3,6 +3,10 @@
 在 IntelliJ IDEA 内管理 **阿里云 OSS / Amazon S3** 的独立插件，项目名 `wlzn_oss_browser`。
 采用 IDEA 原生 Swing 界面与两家云厂商的官方 SDK，不需要额外启动桌面客户端。
 
+[Apache 2.0 许可证](LICENSE) · [问题反馈](https://github.com/hwl9581/wlzn_oss_browser/issues)
+
+发布页演示配图均使用虚构数据：[OSS 浏览](docs/marketplace/images/01-oss-browser.png)、[S3 浏览](docs/marketplace/images/02-s3-browser.png)、[传输任务](docs/marketplace/images/03-transfer-tasks.png)。
+
 **1.0.5 修复 IDEA 内 S3 连接失败**：移除阿里云 SDK 传递依赖引入的旧 `stax-api`、`xpp3` XML API，避免覆盖 JDK `java.xml`，修复 AWS 解析响应时的 `ClassCastException`。更新后完整重启 IDEA，让旧类加载器退出。
 
 1.0.4 补充连接诊断：浏览连接和目录加载失败记录安全异常链，区分 DNS、TLS、连接失败及超时；只读连接失败不再提示“批量操作可能已部分完成”。拦截缺少 `s3` 前缀的 AWS 区域域名。

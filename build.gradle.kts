@@ -73,3 +73,7 @@ intellijPlatform {
 }
 
 tasks.wrapper { gradleVersion = providers.gradleProperty("gradleVersion").get() }
+
+tasks.processResources {
+    from(files("LICENSE", "NOTICE")) { into("META-INF") }
+}
