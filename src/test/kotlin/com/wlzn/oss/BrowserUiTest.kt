@@ -45,6 +45,37 @@ class BrowserUiTest : BasePlatformTestCase() {
         } finally { super.tearDown() }
     }
 
+    fun testBreadcrumbSegmentsStayCompactWhenViewportIsWide() {
+        val destinations = mutableListOf<String>()
+        val bar = BreadcrumbBar { destinations.add(it) }
+        bar.setNavigationEnabled(true)
+        bar.showPath("jar/script/v2/test/")
+        render(bar, "compact-breadcrumb", 1100, 32)
+        val buttons = components(bar).filterIsInstance<JButton>().filter { !it.text.isNullOrEmpty() }
+        assertEquals(listOf("/", "jar", "script", "v2", "test"), buttons.map { it.text })
+        buttons.forEach { assertTrue("Breadcrumb button must not stretch: ${it.text}", it.width <= it.preferredSize.width + 1) }
+        buttons.first { it.text == "script" }.doClick()
+        assertEquals(listOf("jar/script/"), destinations)
+    }
+
+    fun testOverwriteDialogIsOnlyShownForActualConflicts() {
+        val browser = OssBrowserPanel(project) { FakeStorage() }
+        val prompts = AtomicInteger()
+        var answer = com.intellij.openapi.ui.Messages.CANCEL
+        val original = com.intellij.openapi.ui.TestDialogManager.setTestDialog { prompts.incrementAndGet(); answer }
+        try {
+            val method = OssBrowserPanel::class.java.getDeclaredMethod("overwriteChoice", Set::class.java, String::class.java).apply { isAccessible = true }
+            assertEquals(false, method.invoke(browser, emptySet<String>(), "下载"))
+            assertEquals(0, prompts.get())
+            assertNull(method.invoke(browser, setOf("a.txt"), "下载"))
+            answer = com.intellij.openapi.ui.Messages.NO
+            assertEquals(false, method.invoke(browser, setOf("a.txt"), "上传"))
+            answer = com.intellij.openapi.ui.Messages.YES
+            assertEquals(true, method.invoke(browser, setOf("a.txt"), "上传"))
+            assertEquals(3, prompts.get())
+        } finally { com.intellij.openapi.ui.TestDialogManager.setTestDialog(original); Disposer.dispose(browser) }
+    }
+
     fun testBucketHierarchyAndBreadcrumbNavigateTheSameFileList() {
         val keys = AtomicReference(listOf("share/appconf/test/message/images/a.jpg", "share/appconf/test/message/default.jpg", "assets/logo.png"))
         val browser = OssBrowserPanel(project) { fixture(keys) }

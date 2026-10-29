@@ -7,6 +7,8 @@
 
 发布页演示配图均使用虚构数据：[OSS 浏览](docs/marketplace/images/01-oss-browser.png)、[S3 浏览](docs/marketplace/images/02-s3-browser.png)、[传输任务](docs/marketplace/images/03-transfer-tasks.png)。
 
+**1.0.6 修复上传下载体验**：面包屑各路径段按文字宽度紧凑排列；上传和下载使用跟随 IDEA 主题的文件选择器，分别保存上次选择的本地目录，重启后仍可恢复。下载选择已有文件夹，直接写入该位置并保留云端子目录，不再将目标目录名重复嵌套一层。实际存在同名文件时才询问覆盖/跳过，已有目录或无关文件不触发覆盖提示。目标文件/目录类型冲突以及本批文件与子路径无法同时落盘的情况，会在入队前整体拒绝。默认禁止覆盖和传输期间的竞争检查保持有效。
+
 **1.0.5 修复 IDEA 内 S3 连接失败**：移除阿里云 SDK 传递依赖引入的旧 `stax-api`、`xpp3` XML API，避免覆盖 JDK `java.xml`，修复 AWS 解析响应时的 `ClassCastException`。更新后完整重启 IDEA，让旧类加载器退出。
 
 1.0.4 补充连接诊断：浏览连接和目录加载失败记录安全异常链，区分 DNS、TLS、连接失败及超时；只读连接失败不再提示“批量操作可能已部分完成”。拦截缺少 `s3` 前缀的 AWS 区域域名。
@@ -19,7 +21,7 @@
 
 ## 安装与配置
 
-1. 在 IDEA 的 **Settings → Plugins → 齿轮 → Install Plugin from Disk** 中选择 `build/distributions/wlzn_oss_browser-1.0.5.zip`，完整重启 IDEA。
+1. 在 IDEA 的 **Settings → Plugins → 齿轮 → Install Plugin from Disk** 中选择 `build/distributions/wlzn_oss_browser-1.0.6.zip`，完整重启 IDEA。
 2. 打开 **Settings → Tools → WLZN OSS Browser**，新增连接。
 3. 选择阿里云 OSS 或 Amazon S3，填写连接名称、AccessKey ID、Secret；临时凭据同时填写 STS / Session Token。**Region 和 Endpoint 均可留空**。
 4. **Endpoint 留空时自动按 Bucket 路由**，同一套密钥可以访问多个区域，无需重复配置。OSS 使用 Bucket 列表的区域信息或位置查询，S3 使用 HeadBucket 的区域响应头；浏览、上传下载、续传、分片管理、临时链接都使用 Bucket 的实际区域。

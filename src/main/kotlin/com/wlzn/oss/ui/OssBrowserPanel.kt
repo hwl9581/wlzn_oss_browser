@@ -4,6 +4,7 @@ import com.google.gson.GsonBuilder
 import com.google.gson.JsonParser
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.fileChooser.FileChooser
 import com.intellij.openapi.actionSystem.ActionToolbar
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
@@ -351,21 +352,24 @@ class OssBrowserPanel @JvmOverloads internal constructor(private val project: Pr
     }
 
     private fun chooseUpload() {
-        val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.FILES_AND_DIRECTORIES; isMultiSelectionEnabled = true; dialogTitle = "选择上传文件或目录" }
-        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) upload(chooser.selectedFiles.map { it.toPath() })
+        if (!ready()) return
+        val request = generation
+        FileChooser.chooseFiles(LocalTransferChooser.descriptor(TransferKind.UPLOAD), project, this,
+            LocalTransferChooser.initialDirectory(settings, TransferKind.UPLOAD)) { files ->
+            if (alive(request) && ready() && files.isNotEmpty()) upload(files.map { it.toNioPath() })
+        }
     }
 
     private fun upload(paths: List<Path>) {
         val connection = profile ?: return
         val bucket = currentBucket.takeIf { it.isNotBlank() } ?: return
         val prefix = currentPrefix
-        val overwrite = overwriteChoice("上传到 ${connection.name} · $bucket/$prefix\n同名对象如何处理？") ?: return
-        background("准备上传任务", { StorageOperations.uploadFiles(paths, prefix) }) { files ->
-            try {
-                TransferManager.getInstance().enqueue(connection, files.map { (file, key) -> TransferRecord(
-                    profileId = connection.id, kind = TransferKind.UPLOAD, bucket = bucket, key = key, localPath = file.toAbsolutePath().toString(), overwrite = overwrite) })
-                setStatus("已加入 ${files.size} 个上传任务，请查看“传输任务”页签")
-            } catch (e: IllegalArgumentException) { Messages.showWarningDialog(project, e.message.orEmpty(), "无法建立上传任务") }
+        if (paths.isEmpty()) return
+        LocalTransferChooser.rememberSelection(settings, TransferKind.UPLOAD, paths)
+        background("检查上传目标", {
+            openClient(connection).use { client -> StorageOperations.prepareUpload(client, connection.id, bucket, prefix, paths) { ProgressManager.checkCanceled() } }
+        }) { plan ->
+            enqueuePrepared(connection, plan, "上传")
         }
     }
 
@@ -374,23 +378,35 @@ class OssBrowserPanel @JvmOverloads internal constructor(private val project: Pr
         val bucket = currentBucket
         val selection = selected().takeIf { it.isNotEmpty() } ?: return
         val prefix = currentPrefix
-        val chooser = JFileChooser().apply { fileSelectionMode = JFileChooser.DIRECTORIES_ONLY; dialogTitle = "选择下载目录" }
-        if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return
-        val root = chooser.selectedFile.toPath().toAbsolutePath().normalize()
-        val overwrite = overwriteChoice("下载所选 ${selection.size} 项及其子目录。\n本地同名文件如何处理？") ?: return
-        background("准备下载任务", {
-            openClient(connection).use { client -> StorageOperations.expand(client, bucket, selection) { ProgressManager.checkCanceled() }.map { entry ->
-                val local = StorageOperations.safeDownloadPath(root, entry.key.removePrefix(prefix))
-                TransferRecord(profileId = connection.id, kind = TransferKind.DOWNLOAD, bucket = bucket, key = entry.key, localPath = local.toString(), overwrite = overwrite)
-            } }
-        }) { jobs ->
-            try { TransferManager.getInstance().enqueue(connection, jobs); setStatus("已加入 ${jobs.size} 个下载任务，请查看“传输任务”页签") }
-            catch (e: IllegalArgumentException) { Messages.showWarningDialog(project, e.message.orEmpty(), "无法建立下载任务") }
+        val request = generation
+        FileChooser.chooseFiles(LocalTransferChooser.descriptor(TransferKind.DOWNLOAD), project, this,
+            LocalTransferChooser.initialDirectory(settings, TransferKind.DOWNLOAD)) { directories ->
+            val root = directories.singleOrNull()?.toNioPath() ?: return@chooseFiles
+            if (!alive(request) || !ready()) return@chooseFiles
+            LocalTransferChooser.rememberSelection(settings, TransferKind.DOWNLOAD, listOf(root))
+            background("检查下载目标", {
+                openClient(connection).use { client -> StorageOperations.prepareDownload(client, connection.id, bucket, prefix, selection, root) { ProgressManager.checkCanceled() } }
+            }) { plan -> enqueuePrepared(connection, plan, "下载") }
         }
     }
 
-    private fun overwriteChoice(message: String): Boolean? = when (Messages.showYesNoCancelDialog(project, message, "同名文件处理", "覆盖", "跳过", "取消", Messages.getQuestionIcon())) {
-        Messages.YES -> true; Messages.NO -> false; else -> null
+    private fun enqueuePrepared(connection: ConnectionProfile, plan: StorageOperations.TransferPlan, action: String) {
+        if (plan.jobs.isEmpty()) { setStatus("没有需要${action}的文件或目录"); return }
+        val overwrite = overwriteChoice(plan.conflicts, action) ?: return
+        try {
+            val jobs = plan.jobs.map { it.copy(overwrite = overwrite && it.key in plan.conflicts) }
+            TransferManager.getInstance().enqueue(connection, jobs)
+            setStatus("已加入 ${jobs.size} 个${action}任务，请查看“传输任务”页签")
+        } catch (e: IllegalArgumentException) { Messages.showWarningDialog(project, e.message.orEmpty(), "无法建立${action}任务") }
+    }
+
+    private fun overwriteChoice(conflicts: Set<String>, action: String): Boolean? {
+        if (conflicts.isEmpty()) return false
+        return when (Messages.showYesNoCancelDialog(project,
+            "$action 目标存在 ${conflicts.size} 个同名文件，如何处理？\n选择仅应用于同名文件，其余文件正常传输。",
+            "同名文件处理", "覆盖", "跳过", "取消", Messages.getQuestionIcon())) {
+            Messages.YES -> true; Messages.NO -> false; else -> null
+        }
     }
 
     private fun createFolder() {

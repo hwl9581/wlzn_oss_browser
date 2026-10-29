@@ -10,6 +10,62 @@ object StorageOperations {
     const val MAX_PREVIEW_BYTES = 5L * 1024 * 1024
     const val MAX_COPY_BYTES = 5L * 1024 * 1024 * 1024
 
+    data class TransferPlan(val jobs: List<TransferRecord>, val conflicts: Set<String>)
+
+    fun prepareUpload(client: StorageClient, profileId: String, bucket: String, prefix: String,
+                      paths: List<Path>, check: () -> Unit = {}): TransferPlan {
+        val conflicts = linkedSetOf<String>()
+        val jobs = uploadFiles(paths, prefix).map { (file, key) ->
+            check()
+            // 已存在的目录占位对象不会覆盖目录内文件，不应因此询问覆盖。
+            if (!key.endsWith('/') && client.head(bucket, key) != null) conflicts.add(key)
+            TransferRecord(profileId = profileId, kind = TransferKind.UPLOAD, bucket = bucket, key = key,
+                localPath = file.toAbsolutePath().normalize().toString(), overwrite = false)
+        }
+        return TransferPlan(jobs, conflicts)
+    }
+
+    fun prepareDownload(client: StorageClient, profileId: String, bucket: String, prefix: String,
+                        selection: List<ObjectEntry>, root: Path, check: () -> Unit = {}): TransferPlan {
+        val base = root.toAbsolutePath().normalize()
+        require(Files.isDirectory(base, LinkOption.NOFOLLOW_LINKS)) { "请选择已有的本地下载目录" }
+        val conflicts = linkedSetOf<String>()
+        val jobs = expand(client, bucket, selection, check).map { entry ->
+            check()
+            require(entry.key.startsWith(prefix)) { "所选对象不在当前目录下" }
+            val local = safeDownloadPath(base, entry.key.removePrefix(prefix))
+            var parent: Path? = local.parent
+            while (parent != null && parent.startsWith(base)) {
+                require(!Files.exists(parent, LinkOption.NOFOLLOW_LINKS) || Files.isDirectory(parent, LinkOption.NOFOLLOW_LINKS)) {
+                    "下载目录被本地同名文件占用：$parent"
+                }
+                parent = parent.parent
+            }
+            if (Files.exists(local, LinkOption.NOFOLLOW_LINKS)) {
+                if (entry.directory || entry.key.endsWith('/')) {
+                    require(Files.isDirectory(local, LinkOption.NOFOLLOW_LINKS)) { "云端目录与本地文件同名：$local，请更换下载位置" }
+                } else {
+                    require(Files.isRegularFile(local, LinkOption.NOFOLLOW_LINKS)) { "云端文件与本地目录同名：$local，请更换下载位置" }
+                    conflicts.add(entry.key)
+                }
+            }
+            TransferRecord(profileId = profileId, kind = TransferKind.DOWNLOAD, bucket = bucket, key = entry.key,
+                localPath = local.toString(), overwrite = false)
+        }
+        // 对象存储允许同时存在 a 和 a/b，本地文件系统不能同时把 a 当文件和目录。
+        val fileTargets = jobs.filterNot { it.key.endsWith('/') }.map { Path.of(it.localPath) }.toSet()
+        jobs.forEach { job ->
+            val target = Path.of(job.localPath)
+            require(!job.key.endsWith('/') || target !in fileTargets) { "所选云端文件与目录映射到同一本地路径：$target" }
+            var parent = target.parent
+            while (parent != null && parent.startsWith(base)) {
+                require(parent !in fileTargets) { "所选云端文件同时被用作下载目录：$parent，请分开下载到不同位置" }
+                parent = parent.parent
+            }
+        }
+        return TransferPlan(jobs, conflicts)
+    }
+
     fun validateReadResponse(status: Int, contentRange: String?, contentLength: Long, offset: Long, expectedSize: Long?, length: Long? = null) {
         val valid = if (offset == 0L && length == null) status == 200 && (expectedSize == null || expectedSize == contentLength) else {
             val match = contentRange?.let { Regex("bytes (\\d+)-(\\d+)/(\\d+)").matchEntire(it) }

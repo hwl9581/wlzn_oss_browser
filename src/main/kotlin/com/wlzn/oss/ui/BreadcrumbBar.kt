@@ -41,6 +41,7 @@ internal class BreadcrumbBar(private val navigate: (String) -> Unit) : JPanel(Ca
             crumbs.add(JButton(text).apply {
                 putClientProperty("html.disable", true)
                 border = JBUI.Borders.empty(4, 5); isContentAreaFilled = false; isBorderPainted = false
+                maximumSize = preferredSize
                 isEnabled = enabledNavigation; toolTipText = if (destination.isEmpty()) "Bucket 根目录" else "目录：$destination"
                 addActionListener { navigate(destination) }
             })
@@ -48,7 +49,7 @@ internal class BreadcrumbBar(private val navigate: (String) -> Unit) : JPanel(Ca
         crumb("/", "")
         var destination = ""
         prefix.removeSuffix("/").takeIf { it.isNotEmpty() }?.split('/')?.forEach { segment ->
-            if (destination.isNotEmpty()) crumbs.add(BrowserUi.label(" / "))
+            if (destination.isNotEmpty()) crumbs.add(BrowserUi.label(" / ").apply { maximumSize = preferredSize })
             destination += "$segment/"
             crumb(segment.ifEmpty { "∅" }, destination)
         }
