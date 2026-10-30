@@ -72,16 +72,23 @@ class AliyunStorageClient(private val client: OSS) : StorageClient {
         }
     }
 
-    private fun checkForbidOverwrite(bucket: String) {
+    private fun useForbidOverwrite(bucket: String, key: String, requested: Boolean): Boolean {
+        if (!requested) return false
         val versioning = client.getBucketVersioning(bucket).status.orEmpty()
-        require(versioning !in setOf("Enabled", "Suspended")) { "OSS 版本化 Bucket 不支持可靠的禁止覆盖写入，请明确选择覆盖或更换目的 Bucket" }
+        if (versioning in setOf("Enabled", "Suspended")) {
+            // 版本化 Bucket 忽略禁止覆盖请求头。沿用传输层的冲突选择，并在提交前再检查一次。
+            // 此检查不是原子条件写；检查之后发生的并发写入仍可能被替换为本次上传。
+            require(head(bucket, key) == null) { "上传目标已存在，未覆盖；请刷新后重新上传并选择覆盖或跳过" }
+            return false
+        }
+        return true
     }
 
     override fun put(bucket: String, key: String, input: InputStream, size: Long, contentType: String, forbidOverwrite: Boolean, expectedEtag: String?) {
-        if (forbidOverwrite) checkForbidOverwrite(bucket)
+        val conditional = useForbidOverwrite(bucket, key, forbidOverwrite)
         val metadata = ObjectMetadata().apply { contentLength = size; this.contentType = contentType }
         client.putObject(PutObjectRequest(bucket, key, input, metadata).apply {
-            if (forbidOverwrite) addHeader("x-oss-forbid-overwrite", "true")
+            if (conditional) addHeader("x-oss-forbid-overwrite", "true")
         })
     }
 
@@ -194,9 +201,9 @@ class AliyunStorageClient(private val client: OSS) : StorageClient {
     }
 
     override fun completeUpload(bucket: String, key: String, uploadId: String, parts: List<UploadPart>, forbidOverwrite: Boolean, expectedEtag: String?) {
-        if (forbidOverwrite) checkForbidOverwrite(bucket)
+        val conditional = useForbidOverwrite(bucket, key, forbidOverwrite)
         client.completeMultipartUpload(CompleteMultipartUploadRequest(bucket, key, uploadId,
-            parts.map { PartETag(it.number, it.etag) }).apply { if (forbidOverwrite) addHeader("x-oss-forbid-overwrite", "true") })
+            parts.map { PartETag(it.number, it.etag) }).apply { if (conditional) addHeader("x-oss-forbid-overwrite", "true") })
     }
 
     override fun abortUpload(bucket: String, key: String, uploadId: String) {

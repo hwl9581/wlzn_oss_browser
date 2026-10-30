@@ -22,6 +22,8 @@ class StorageSdkContractTest {
         val requests = CopyOnWriteArrayList<Request>()
         var ignoreRange = false
         var versioned = false
+        var versioningSuspended = false
+        var denyVersioning = false
         var denyBucketHead = false
         var locationRedirect = false
         var emptyPartListing = false
@@ -65,7 +67,10 @@ class StorageSdkContractTest {
                     exchange.responseHeaders.add("$prefix-meta-owner", "unit-owner")
                     exchange.responseHeaders.add("$prefix-storage-class", if (provider == Provider.ALIYUN_OSS) "IA" else "STANDARD_IA")
                 }
-                "versioning" in query -> body = "<VersioningConfiguration>${if (versioned) "<Status>Enabled</Status>" else ""}</VersioningConfiguration>"
+                "versioning" in query -> if (denyVersioning) {
+                    status = 403
+                    body = "<Error><Code>AccessDenied</Code><Message>Versioning access denied</Message><RequestId>unit-request</RequestId><HostId>unit-host</HostId></Error>"
+                } else body = "<VersioningConfiguration>${when { versioningSuspended -> "<Status>Suspended</Status>"; versioned -> "<Status>Enabled</Status>"; else -> "" }}</VersioningConfiguration>"
                 "acl" in query && request.method == "GET" -> body = if (provider == Provider.ALIYUN_OSS)
                     "<AccessControlPolicy><Owner><ID>owner</ID><DisplayName>owner</DisplayName></Owner><AccessControlList><Grant>public-read</Grant></AccessControlList></AccessControlPolicy>"
                 else """<AccessControlPolicy><Owner><ID>owner</ID><DisplayName>owner</DisplayName></Owner><AccessControlList>
@@ -160,8 +165,11 @@ class StorageSdkContractTest {
 
     @Test fun `OSS new image upload runs engine and SDK end to end with initially empty parts`() = newUpload(Provider.ALIYUN_OSS)
     @Test fun `S3 new image upload runs engine and SDK end to end with initially empty parts`() = newUpload(Provider.AMAZON_S3)
-    private fun newUpload(provider: Provider) = withClient(provider) { endpoint, client ->
+    @Test fun `OSS versioned new upload completes without ignored forbid overwrite header`() = newUpload(Provider.ALIYUN_OSS, versioned = true)
+    @Test fun `OSS suspended versioning new upload completes without ignored forbid overwrite header`() = newUpload(Provider.ALIYUN_OSS, suspended = true)
+    private fun newUpload(provider: Provider, versioned: Boolean = false, suspended: Boolean = false) = withClient(provider) { endpoint, client ->
         endpoint.emptyPartListing = true; endpoint.missingObjectHead = true
+        endpoint.versioned = versioned; endpoint.versioningSuspended = suspended
         val root = java.nio.file.Files.createTempDirectory(java.io.File(System.getProperty("java.io.tmpdir")).canonicalFile.toPath(), "wlzn-sdk-upload-")
         try {
             val file = java.nio.file.Files.write(root.resolve("default.jpg"), byteArrayOf(0xff.toByte(), 0xd8.toByte(), 1, 2, 0xff.toByte(), 0xd9.toByte()))
@@ -172,9 +180,70 @@ class StorageSdkContractTest {
             assertEquals(0L to 6L, progress.first()); assertEquals(6L to 6L, progress.last())
             assertTrue(endpoint.requests.any { it.method == "PUT" && "partNumber=" in it.query })
             assertTrue(endpoint.requests.any { it.method == "POST" && "uploadId=" in it.query })
+            if (versioned || suspended) {
+                assertNull(endpoint.requests.last { it.method == "POST" && "uploadId=" in it.query }.header("x-oss-forbid-overwrite"))
+                assertTrue(endpoint.requests.any { "versioning" in it.query })
+            }
             assertNull(CheckpointStore(root.resolve("checkpoints")).read(job.id))
         } finally {
             java.nio.file.Files.walk(root).use { it.sorted(Comparator.reverseOrder()).forEach { path -> java.nio.file.Files.delete(path) } }
+        }
+    }
+
+    @Test fun `OSS versioned simple upload and empty directory use ordinary upload with final absence check`() = withClient(Provider.ALIYUN_OSS) { endpoint, client ->
+        endpoint.versioned = true; endpoint.missingObjectHead = true
+        for (key in listOf("empty.txt", "folder/")) {
+            val before = endpoint.requests.size
+            client.put("unit-bucket", key, java.io.InputStream.nullInputStream(), 0, "text/plain", true)
+            val requests = endpoint.requests.drop(before)
+            assertEquals(listOf("GET", "HEAD", "PUT"), requests.map { it.method })
+            assertEquals("/unit-bucket/$key", requests[1].path)
+            assertNull(requests.last().header("x-oss-forbid-overwrite"))
+        }
+    }
+
+    @Test fun `OSS versioned ordinary upload honors explicit overwrite choice`() = withClient(Provider.ALIYUN_OSS) { endpoint, client ->
+        endpoint.versioned = true
+        client.put("unit-bucket", "existing.txt", "abc".byteInputStream(), 3, "text/plain", false)
+        assertEquals(listOf("PUT"), endpoint.requests.map { it.method })
+        assertNull(endpoint.requests.last().header("x-oss-forbid-overwrite"))
+        client.completeUpload("unit-bucket", "existing.txt", "unit-upload", listOf(UploadPart(1, "abc", 3)), false)
+        assertEquals("POST", endpoint.requests.last().method)
+        assertNull(endpoint.requests.last().header("x-oss-forbid-overwrite"))
+    }
+
+    @Test fun `OSS versioned target appearing before multipart completion is not overwritten`() = withClient(Provider.ALIYUN_OSS) { endpoint, client ->
+        endpoint.versioned = true
+        val failure = assertThrows(IllegalArgumentException::class.java) {
+            client.completeUpload("unit-bucket", "new.txt", "unit-upload", listOf(UploadPart(1, "abc", 3)), true)
+        }
+        assertTrue(failure.message.orEmpty().contains("目标已存在"))
+        assertFalse(endpoint.requests.any { it.method == "POST" })
+        assertTrue(endpoint.requests.any { it.method == "HEAD" && it.path.endsWith("/new.txt") })
+    }
+
+    @Test fun `OSS unreadable versioning never silently falls back to ordinary upload`() = withClient(Provider.ALIYUN_OSS) { endpoint, client ->
+        endpoint.denyVersioning = true; endpoint.missingObjectHead = true
+        assertThrows(com.aliyun.oss.OSSException::class.java) {
+            client.put("unit-bucket", "new.txt", "abc".byteInputStream(), 3, "text/plain", true)
+        }
+        assertThrows(com.aliyun.oss.OSSException::class.java) {
+            client.completeUpload("unit-bucket", "new.txt", "unit-upload", listOf(UploadPart(1, "abc", 3)), true)
+        }
+        assertFalse(endpoint.requests.any { it.method in setOf("PUT", "POST") })
+    }
+
+    @Test fun `OSS versioned existing target is skipped without initiating a write`() = withClient(Provider.ALIYUN_OSS) { endpoint, client ->
+        endpoint.versioned = true
+        val root = java.nio.file.Files.createTempDirectory(java.io.File(System.getProperty("java.io.tmpdir")).canonicalFile.toPath(), "wlzn-versioned-skip-")
+        try {
+            val file = java.nio.file.Files.writeString(root.resolve("existing.txt"), "abc")
+            val job = TransferRecord(profileId = "unit", bucket = "unit-bucket", key = "existing.txt", localPath = file.toString(), overwrite = false)
+            val status = TransferEngine(CheckpointStore(root.resolve("checkpoints"))).run(client, job, "unit", TransferControl()) { _, _ -> }
+            assertEquals(TransferStatus.SKIPPED, status)
+            assertFalse(endpoint.requests.any { it.method in setOf("PUT", "POST") })
+        } finally {
+            java.nio.file.Files.walk(root).use { it.sorted(Comparator.reverseOrder()).forEach(java.nio.file.Files::delete) }
         }
     }
     private fun readContract(provider: Provider) = withClient(provider) { endpoint, client ->
@@ -228,7 +297,7 @@ class StorageSdkContractTest {
         if (provider == Provider.ALIYUN_OSS) {
             endpoint.versioned = true
             assertThrows(IllegalArgumentException::class.java) { client.put("unit-bucket", "blocked", "abc".byteInputStream(), 3, "text/plain", true) }
-            assertFalse(endpoint.requests.any { it.path.endsWith("/blocked") })
+            assertFalse(endpoint.requests.any { it.method == "PUT" && it.path.endsWith("/blocked") })
         }
     }
 }

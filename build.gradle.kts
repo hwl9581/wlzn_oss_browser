@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.wlzn"
-version = "1.0.6"
+version = "1.0.7"
 
 kotlin {
     jvmToolchain(21)
@@ -52,6 +52,7 @@ intellijPlatform {
         }
         changeNotes = """
             <ul>
+                <li>修复 OSS 版本控制开启或暂停时新文件无法上传：使用普通上传，保留同名文件选择及提交前目标检查；未版本化 OSS 和 S3 继续使用条件写入保护。</li>
                 <li>修复面包屑路径被横向拉伸；上传/下载改用 IDEA 主题文件选择器并分别记住上次目录，下载直接使用所选目录，仅在实际文件重名时询问覆盖。</li>
                 <li>修复 OSS 传递依赖打入重复 JDK XML API，导致 IDEA 内 AWS S3 响应解析类型转换失败、连接不可用的问题。</li>
                 <li>补充浏览连接和目录加载的安全诊断，细分 DNS、TLS、代理连接和超时错误；拦截缺少 S3 前缀的 AWS 区域域名。</li>

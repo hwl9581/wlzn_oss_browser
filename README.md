@@ -7,6 +7,8 @@
 
 发布页演示配图均使用虚构数据：[OSS 浏览](docs/marketplace/images/01-oss-browser.png)、[S3 浏览](docs/marketplace/images/02-s3-browser.png)、[传输任务](docs/marketplace/images/03-transfer-tasks.png)。
 
+**1.0.7 修复版本化 OSS 上传**：Bucket 版本控制为开启或暂停时，新文件改用普通上传，不再因禁止覆盖请求头无效而直接失败。仍在上传前检查同名文件，仅对已存在文件询问覆盖/跳过；未选择覆盖的任务在提交前再检查目标是否存在。该检查无法提供原子禁止覆盖保证，检查后的并发写入仍可能被本次上传替换为最新对象。版本控制开启时按 OSS 规则保留历史版本；暂停时 null 版本可能被替换。未版本化 OSS 和 S3 的条件写入保护保持不变。
+
 **1.0.6 修复上传下载体验**：面包屑各路径段按文字宽度紧凑排列；上传和下载使用跟随 IDEA 主题的文件选择器，分别保存上次选择的本地目录，重启后仍可恢复。下载选择已有文件夹，直接写入该位置并保留云端子目录，不再将目标目录名重复嵌套一层。实际存在同名文件时才询问覆盖/跳过，已有目录或无关文件不触发覆盖提示。目标文件/目录类型冲突以及本批文件与子路径无法同时落盘的情况，会在入队前整体拒绝。默认禁止覆盖和传输期间的竞争检查保持有效。
 
 **1.0.5 修复 IDEA 内 S3 连接失败**：移除阿里云 SDK 传递依赖引入的旧 `stax-api`、`xpp3` XML API，避免覆盖 JDK `java.xml`，修复 AWS 解析响应时的 `ClassCastException`。更新后完整重启 IDEA，让旧类加载器退出。
@@ -21,7 +23,7 @@
 
 ## 安装与配置
 
-1. 在 IDEA 的 **Settings → Plugins → 齿轮 → Install Plugin from Disk** 中选择 `build/distributions/wlzn_oss_browser-1.0.6.zip`，完整重启 IDEA。
+1. 在 IDEA 的 **Settings → Plugins → 齿轮 → Install Plugin from Disk** 中选择 `build/distributions/wlzn_oss_browser-1.0.7.zip`，完整重启 IDEA。
 2. 打开 **Settings → Tools → WLZN OSS Browser**，新增连接。
 3. 选择阿里云 OSS 或 Amazon S3，填写连接名称、AccessKey ID、Secret；临时凭据同时填写 STS / Session Token。**Region 和 Endpoint 均可留空**。
 4. **Endpoint 留空时自动按 Bucket 路由**，同一套密钥可以访问多个区域，无需重复配置。OSS 使用 Bucket 列表的区域信息或位置查询，S3 使用 HeadBucket 的区域响应头；浏览、上传下载、续传、分片管理、临时链接都使用 Bucket 的实际区域。
@@ -81,7 +83,7 @@ AWS S3 东京区域可填写 Region `ap-northeast-1` 并将 Endpoint 留空；�
 | 浏览 | `oss:ListBuckets`（不指定 Bucket 时）、`oss:ListObjects`、`oss:GetObject` | `s3:ListAllMyBuckets`（不指定 Bucket 时）、`s3:ListBucket`、`s3:GetObject` |
 | 自动定位区域 | 桶列表含位置信息时直接复用；指定 Bucket 等未缓存场景可能需要 `oss:GetBucketLocation` | 使用 HeadBucket 的区域响应头，不额外要求 `s3:GetBucketLocation` |
 | 上传/分片/清理 | `oss:PutObject`、`oss:ListParts`、`oss:AbortMultipartUpload`、`oss:ListMultipartUploads` | `s3:PutObject`、`s3:ListMultipartUploadParts`、`s3:AbortMultipartUpload`、`s3:ListBucketMultipartUploads` |
-| 禁止覆盖上传 | 还需要 `oss:GetBucketVersioning` | 使用条件写入 |
+| 默认防重名上传 | 还需要 `oss:GetBucketVersioning`；未版本化 Bucket 使用条件写入，版本化 Bucket 使用目标检查及普通上传 | 使用条件写入 |
 | 删除/建桶 | `oss:DeleteObject`、`oss:PutBucket`、`oss:DeleteBucket` | `s3:DeleteObject`、`s3:CreateBucket`、`s3:DeleteBucket` |
 | ACL/保留权限复制 | `oss:GetObjectAcl`、`oss:PutObjectAcl`；跨桶继承 ACL 还需 `oss:GetBucketAcl` | `s3:GetObjectAcl`、`s3:PutObjectAcl` |
 | 解冻 | `oss:RestoreObject` | `s3:RestoreObject` |
@@ -93,7 +95,7 @@ AWS S3 东京区域可填写 Region `ap-northeast-1` 并将 Endpoint 留空；�
 ## 操作边界
 
 - 复制/移动/重命名限定同一连接、同一区域内，支持跨 Bucket，单对象最大 5 GiB。跨区域目标会在写入前拒绝，不删除来源。目标存在性在写入前检查；云端复制 API 无法对目标提供同等的原子禁止覆盖保证，检查后发生的并发写入仍可能被覆盖。移动删除来源前再次校验 ETag，但不具备跨对象事务或条件删除保证。对有其他写入方的目录，请先停止并发写入并核对结果。
-- S3 上传/文本保存使用条件写入。OSS 新对象上传使用 `x-oss-forbid-overwrite`，且会先确认 Bucket 从未开启版本控制；开启或暂停版本控制的 Bucket 无法提供相同保证，此时会拒绝“跳过已存在”模式，需要明确选择覆盖。
+- S3 上传/文本保存使用条件写入。未版本化 OSS 的新对象上传使用 `x-oss-forbid-overwrite`；开启或暂停版本控制的 OSS Bucket 会忽略该头，因此改用普通上传。上传前检查和覆盖/跳过选择仍保留，未选择覆盖的对象在提交前再次检查是否存在；最后检查与写入之间不具备原子性。开启版本控制会保留历史版本，暂停状态的 null 版本可能被替换。读取版本状态失败时停止上传，不静默绕过权限错误。
 - OSS 文本原地保存只能先检查 ETag，再执行覆盖写入；其 PutObject 不支持 S3 的 `If-Match` 条件，界面会说明并要求确认。云端元数据编辑使用带来源 ETag 条件的自复制。
 - 文本/图片预览最多 5 MiB，文本要求合法 UTF-8，图片最多 2000 万像素。归档对象要先解冻。解冻默认采用厂商标准方式，S3 保留 1 天；解冻和请求等费用由云服务计费。
 - 下载拒绝路径越界、符号链接、无法安全映射的对象名。默认禁止覆盖的文件通过同目录临时文件和硬链接安全提交，需要目标文件系统支持硬链接（常见本地 APFS/NTFS/ext4 支持）；不支持时保留完整断点并报错。明确允许覆盖时会再次检查本地目标后替换，仍应避免其他程序同时修改该文件。
