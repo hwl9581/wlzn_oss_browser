@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.wlzn"
-version = "1.0.7"
+version = "1.0.8"
 
 kotlin {
     jvmToolchain(21)
@@ -52,6 +52,7 @@ intellijPlatform {
         }
         changeNotes = """
             <ul>
+                <li>文件列表默认按名称升序，点击名称、大小、修改时间表头切换升降序，并显示排序箭头；刷新及加载更多后保留排序。</li>
                 <li>修复 OSS 版本控制开启或暂停时新文件无法上传：使用普通上传，保留同名文件选择及提交前目标检查；未版本化 OSS 和 S3 继续使用条件写入保护。</li>
                 <li>修复面包屑路径被横向拉伸；上传/下载改用 IDEA 主题文件选择器并分别记住上次目录，下载直接使用所选目录，仅在实际文件重名时询问覆盖。</li>
                 <li>修复 OSS 传递依赖打入重复 JDK XML API，导致 IDEA 内 AWS S3 响应解析类型转换失败、连接不可用的问题。</li>

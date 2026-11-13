@@ -50,6 +50,7 @@ import javax.imageio.ImageIO
 import javax.swing.*
 import javax.swing.table.AbstractTableModel
 import javax.swing.table.DefaultTableCellRenderer
+import javax.swing.table.TableRowSorter
 
 class OssBrowserPanel @JvmOverloads internal constructor(private val project: Project,
     private val openClient: (ConnectionProfile) -> StorageClient = ConnectionAccess::open) : JPanel(BorderLayout()), Disposable {
@@ -97,9 +98,13 @@ class OssBrowserPanel @JvmOverloads internal constructor(private val project: Pr
             ?.let { entries.getOrNull(convertRowIndexToModel(it))?.key?.let { key -> "对象：$key" } }
     }.apply {
         name = "oss.files"
-        autoCreateRowSorter = true
+        rowSorter = TableRowSorter(model).apply {
+            maxSortKeys = 1
+            sortKeys = listOf(RowSorter.SortKey(0, SortOrder.ASCENDING))
+        }
         setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION)
         BrowserUi.styleTable(this, 34)
+        tableHeader.toolTipText = "点击名称、大小或修改时间排序，再次点击切换升序/降序（对当前已加载项生效）"
     }
 
     init {

@@ -76,6 +76,86 @@ class BrowserUiTest : BasePlatformTestCase() {
         } finally { com.intellij.openapi.ui.TestDialogManager.setTestDialog(original); Disposer.dispose(browser) }
     }
 
+    fun testFileHeadersToggleNameSizeAndModifiedSorting() {
+        assertFileHeaderSorting()
+    }
+
+    fun testDarkThemeFileHeadersToggleNameSizeAndModifiedSorting() {
+        val oldLaf = UIManager.getLookAndFeel()
+        val wasDark = !JBColor.isBright()
+        try {
+            UIManager.setLookAndFeel("com.intellij.ide.ui.laf.darcula.DarculaLaf")
+            JBColor.setDark(true)
+            com.intellij.ide.ui.LafManager.getInstance().defaultDarkLaf?.installTheme(UIManager.getLookAndFeelDefaults())
+            com.intellij.openapi.util.IconLoader.activate()
+            assertFileHeaderSorting()
+        } finally {
+            UIManager.setLookAndFeel(oldLaf)
+            JBColor.setDark(wasDark)
+        }
+    }
+
+    private fun assertFileHeaderSorting() {
+        val prefix = connection.prefix
+        val rows = listOf(
+            ObjectEntry(prefix + "charlie.bin", 1024, Instant.parse("2026-11-02T00:00:00Z")),
+            ObjectEntry(prefix + "alpha.bin", 3L * 1024 * 1024, Instant.parse("2026-11-03T00:00:00Z")),
+            ObjectEntry(prefix + "bravo.bin", 80, Instant.parse("2026-11-01T00:00:00Z"))
+        )
+        val storage = object : StorageClient by FakeStorage() {
+            override fun buckets() = listOf(BucketEntry("test-bucket"))
+            override fun list(bucket: String, prefix: String, token: String?, recursive: Boolean) = if (token == null)
+                ObjectPage(rows, "page2") else ObjectPage(listOf(ObjectEntry(prefix + "delta.bin", 4096, Instant.parse("2026-11-04T00:00:00Z"))))
+        }
+        val browser = OssBrowserPanel(project) { storage }
+        try {
+            render(browser, "file-sorting")
+            invoke(browser, "连接")
+            val table = components(browser).filterIsInstance<JTable>().single()
+            waitFor("待排序文件加载") { table.rowCount == 3 }
+            render(browser, "file-sorting")
+            fun names() = (0 until table.rowCount).map { table.getValueAt(it, 0) }
+            fun clickHeader(modelColumn: Int) {
+                val header = table.tableHeader
+                val rectangle = header.getHeaderRect(table.convertColumnIndexToView(modelColumn))
+                val x = rectangle.x + rectangle.width / 2
+                val y = rectangle.height / 2
+                for (event in listOf(java.awt.event.MouseEvent.MOUSE_PRESSED, java.awt.event.MouseEvent.MOUSE_RELEASED, java.awt.event.MouseEvent.MOUSE_CLICKED)) {
+                    header.dispatchEvent(java.awt.event.MouseEvent(header, event, System.currentTimeMillis(), 0, x, y, 1, false, java.awt.event.MouseEvent.BUTTON1))
+                }
+            }
+            assertEquals(listOf("alpha.bin", "bravo.bin", "charlie.bin"), names())
+            assertEquals(listOf(RowSorter.SortKey(0, SortOrder.ASCENDING)), table.rowSorter.sortKeys)
+            assertNotNull(table.tableHeader.toolTipText)
+            clickHeader(0)
+            assertEquals(listOf("charlie.bin", "bravo.bin", "alpha.bin"), names())
+            clickHeader(0)
+            assertEquals(listOf("alpha.bin", "bravo.bin", "charlie.bin"), names())
+            clickHeader(1)
+            assertEquals(listOf("bravo.bin", "charlie.bin", "alpha.bin"), names())
+            clickHeader(1)
+            assertEquals(listOf("alpha.bin", "charlie.bin", "bravo.bin"), names())
+            clickHeader(2)
+            assertEquals(listOf("bravo.bin", "charlie.bin", "alpha.bin"), names())
+            clickHeader(2)
+            assertEquals(listOf("alpha.bin", "charlie.bin", "bravo.bin"), names())
+            table.setRowSelectionInterval(0, 0)
+            val selected = OssBrowserPanel::class.java.getDeclaredMethod("selected").apply { isAccessible = true }
+            assertEquals(listOf(rows[1]), selected.invoke(browser))
+            clickHeader(1)
+            assertEquals(listOf(rows[1]), selected.invoke(browser))
+            val next = components(browser).filterIsInstance<JButton>().single { it.name == "oss.more-page" }
+            next.doClick()
+            waitFor("下一页保留大小升序") { table.rowCount == 4 }
+            assertEquals(listOf("bravo.bin", "charlie.bin", "delta.bin", "alpha.bin"), names())
+            assertEquals(listOf(RowSorter.SortKey(1, SortOrder.ASCENDING)), table.rowSorter.sortKeys)
+            invoke(browser, "刷新")
+            waitFor("刷新后保留大小升序") { table.rowCount == 3 }
+            assertEquals(listOf("bravo.bin", "charlie.bin", "alpha.bin"), names())
+            assertEquals(listOf(RowSorter.SortKey(1, SortOrder.ASCENDING)), table.rowSorter.sortKeys)
+        } finally { Disposer.dispose(browser) }
+    }
+
     fun testBucketHierarchyAndBreadcrumbNavigateTheSameFileList() {
         val keys = AtomicReference(listOf("share/appconf/test/message/images/a.jpg", "share/appconf/test/message/default.jpg", "assets/logo.png"))
         val browser = OssBrowserPanel(project) { fixture(keys) }
