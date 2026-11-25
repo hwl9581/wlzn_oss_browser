@@ -7,6 +7,8 @@
 
 发布页演示配图均使用虚构数据：[OSS 浏览](docs/marketplace/images/01-oss-browser.png)、[S3 浏览](docs/marketplace/images/02-s3-browser.png)、[传输任务](docs/marketplace/images/03-transfer-tasks.png)。
 
+**1.0.10 支持 IntelliJ IDEA 2026.3**：兼容范围为 2025.3–2026.3（253–263.*），使用 JetBrains Plugin Verifier 检查 2026.3 API 兼容性。
+
 **1.0.7 修复版本化 OSS 上传**：Bucket 版本控制为开启或暂停时，新文件改用普通上传，不再因禁止覆盖请求头无效而直接失败。仍在上传前检查同名文件，仅对已存在文件询问覆盖/跳过；未选择覆盖的任务在提交前再检查目标是否存在。该检查无法提供原子禁止覆盖保证，检查后的并发写入仍可能被本次上传替换为最新对象。版本控制开启时按 OSS 规则保留历史版本；暂停时 null 版本可能被替换。未版本化 OSS 和 S3 的条件写入保护保持不变。
 
 **1.0.6 修复上传下载体验**：面包屑各路径段按文字宽度紧凑排列；上传和下载使用跟随 IDEA 主题的文件选择器，分别保存上次选择的本地目录，重启后仍可恢复。下载选择已有文件夹，直接写入该位置并保留云端子目录，不再将目标目录名重复嵌套一层。实际存在同名文件时才询问覆盖/跳过，已有目录或无关文件不触发覆盖提示。目标文件/目录类型冲突以及本批文件与子路径无法同时落盘的情况，会在入队前整体拒绝。默认禁止覆盖和传输期间的竞争检查保持有效。
@@ -23,7 +25,7 @@
 
 ## 安装与配置
 
-1. 在 IDEA 的 **Settings → Plugins → 齿轮 → Install Plugin from Disk** 中选择 `build/distributions/wlzn_oss_browser-1.0.7.zip`，完整重启 IDEA。
+1. 在 IDEA 的 **Settings → Plugins → 齿轮 → Install Plugin from Disk** 中选择 `build/distributions/wlzn_oss_browser-1.0.10.zip`，完整重启 IDEA。
 2. 打开 **Settings → Tools → WLZN OSS Browser**，新增连接。
 3. 选择阿里云 OSS 或 Amazon S3，填写连接名称、AccessKey ID、Secret；临时凭据同时填写 STS / Session Token。**Region 和 Endpoint 均可留空**。
 4. **Endpoint 留空时自动按 Bucket 路由**，同一套密钥可以访问多个区域，无需重复配置。OSS 使用 Bucket 列表的区域信息或位置查询，S3 使用 HeadBucket 的区域响应头；浏览、上传下载、续传、分片管理、临时链接都使用 Bucket 的实际区域。
@@ -105,7 +107,7 @@ AWS S3 东京区域可填写 Region `ap-northeast-1` 并将 Endpoint 留空；�
 ## 开发与验证
 
 使用 JDK 21、Gradle Wrapper、Kotlin 2.2.20、IntelliJ Platform Gradle Plugin 2.10.5；官方 SDK 为 Aliyun OSS 3.18.5、AWS SDK v2 2.57.5。
-声明兼容 IDEA 2025.3～2026.1（253～261.*），实际平台测试和 Plugin Verifier 结果见 [验证记录](docs/验证记录.md)。未逐个验证的 IDE 版本需安装试用确认。
+声明兼容 IDEA 2025.3～2026.3（253～263.*），实际平台测试和 Plugin Verifier 结果见 [验证记录](docs/验证记录.md)。未逐个验证的 IDE 版本需安装试用确认。
 
 ```bash
 ./gradlew test buildPlugin verifyPluginStructure
@@ -113,12 +115,12 @@ AWS S3 东京区域可填写 Region `ap-northeast-1` 并将 Endpoint 留空；�
 ./gradlew runIde
 ```
 
-本机可指定已安装的 IDE，避免重新下载平台：
+本机可指定已安装的 IDE 进行编译和测试；Plugin Verifier 同时检查该 IDE 和 2026.3，首次需要联网下载 2026.3：
 
 ```bash
 ./gradlew test buildPlugin verifyPluginStructure \
   -PplatformLocalPath='/Applications/IntelliJ IDEA.app/Contents'
-./gradlew verifyPlugin --offline \
+./gradlew verifyPlugin \
   -PplatformLocalPath='/Applications/IntelliJ IDEA.app/Contents'
 ```
 
